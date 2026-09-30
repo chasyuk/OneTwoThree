@@ -221,8 +221,7 @@ Resources:
 
   BackendFunction:
     Type: AWS::Lambda::Function
-    # The function is usable only once the database instance exists.
-    DependsOn: DbInstance
+    # GetAtt references to the database endpoint create the required implicit dependency.
     Properties:
       Tags:
         - Key: PROJECT_NAME
