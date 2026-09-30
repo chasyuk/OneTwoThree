@@ -4,10 +4,11 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-# .env holds compose settings and AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
-# optionally AWS_SESSION_TOKEN). Only the keys defined in .env are exported.
+# .env holds compose settings and optional local AWS credentials/profile. Non-empty keys are exported so
+# blank credential fields don't mask an AWS_PROFILE supplied by the shell;
+# GitHub Actions supplies temporary AWS credentials through OIDC in the deployment job.
 -include .env
-export $(shell sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .env 2>/dev/null)
+export $(shell awk -F= 'NF > 1 && length($$2) > 0 && $$1 ~ /^[A-Za-z_][A-Za-z0-9_]*$$/ { print $$1 }' .env 2>/dev/null)
 
 # ---------------------------------------------------------------------------
 # Settings (override on the command line, e.g. `make aws-deploy ARCH=amd64`)
@@ -150,9 +151,9 @@ format: ## Auto-format backend and frontend
 ##@ AWS backend (Lambda + RDS PostgreSQL via CloudFormation)
 
 .PHONY: aws-check
-aws-check: ## Verify AWS credentials from .env work
+aws-check: ## Verify configured AWS credentials work
 	@aws sts get-caller-identity --query '[Account, Arn]' --output text \
-	  || { echo "AWS credentials missing/invalid: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env"; exit 1; }
+	  || { echo "AWS credentials missing/invalid: configure AWS_PROFILE or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"; exit 1; }
 
 .PHONY: aws-backend-deploy
 aws-backend-deploy: aws-check aws-backend-ecr aws-backend-push aws-backend-stack aws-backend-migrate ## Deploy backend: ECR, image, RDS PostgreSQL, Lambda + function URL, migrations
@@ -174,7 +175,18 @@ aws-backend-login: ## Log Docker in to ECR
 .PHONY: aws-backend-push
 aws-backend-push: aws-backend-login ## Build the Lambda image for linux/$(ARCH) and push it with tag $(TAG)
 	docker buildx build --platform linux/$(ARCH) --provenance=false -f back/Dockerfile.lambda \
-	  -t $(ECR_URI):$(TAG) -t $(ECR_URI):latest --push back
+	  -t $(ECR_URI):$(TAG) --push back
+
+.PHONY: aws-app-deploy
+aws-app-deploy: aws-check aws-backend-push ## Release app code only: update Lambda image, run migrations, publish frontend (infrastructure must exist)
+	aws lambda update-function-code --function-name $(BACKEND_FUNCTION) --image-uri $(ECR_URI):$(TAG) \
+	  --query LastUpdateStatus --output text
+	aws lambda wait function-updated-v2 --function-name $(BACKEND_FUNCTION)
+	$(MAKE) --no-print-directory aws-backend-migrate
+	$(MAKE) --no-print-directory aws-frontend-publish
+	$(MAKE) --no-print-directory aws-backend-health
+	@echo "Frontend: $(call frontend_output,SiteUrl)"
+	@echo "Backend:  $(API_URL)"
 
 .PHONY: aws-backend-stack
 aws-backend-stack: ## Create/update the backend stack (VPC, RDS PostgreSQL, Lambda) with image tag $(TAG); KEEP_IMAGE=1 keeps the current image

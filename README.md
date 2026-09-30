@@ -160,12 +160,7 @@ flowchart LR
     L -. image .-> ECR[ECR]
 ```
 
-1. Put credentials into `.env` (an IAM user or role allowed to use CloudFormation, EC2/VPC, Lambda, ECR, RDS, Secrets Manager, S3, CloudFront, WAF, Pricing Plan Manager, ACM, Route 53, IAM and CloudWatch Logs):
-
-   ```
-   AWS_ACCESS_KEY_ID=...
-   AWS_SECRET_ACCESS_KEY=...
-   ```
+1. Configure local AWS CLI credentials with `aws configure --profile spry-course` and set `AWS_PROFILE=spry-course` in your shell. You can also use an IAM user key in your ignored `.env`, but do not commit keys. GitHub Actions uses a separate OIDC role and never needs a long-lived access key.
 
 2. Optionally copy `infra/backend.params.example.env` to `infra/backend.params.env` to override stack parameters (memory, PostgreSQL version, seeding, …).
 3. Deploy. The first run takes about 15 minutes, mostly waiting for RDS and CloudFront:
@@ -200,3 +195,45 @@ make aws-frontend-https-check # 3. curl https://onetwothree.dobosevych.com/
 **Cost and Free plan.** The database uses RDS for PostgreSQL on the Free Tier eligible `db.t3.micro` Single-AZ class, with 20 GiB of gp2 storage and one-day automated backups. AWS documents `db.t3.micro` PostgreSQL and Single-AZ as Free Tier eligible; eligibility duration and allowances depend on the account's Free Tier offer. The AWS Free account plan does not bill usage while active, and closes when six months pass or credits are exhausted, whichever comes first. Monitor the Cost and Usage widget in the AWS Console; the app and its data become unavailable when that plan closes. The credentials secret and other resources may consume Free Tier credits. Keep the database within its eligible limits and run `make aws-destroy` when you are done. The database stack retains a final RDS snapshot, which remains in the account until you delete it.
 
 On AWS the backend reads `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` instead of `DATABASE_URL`. The password is generated in Secrets Manager and resolved into the function's environment at deploy time, so the VPC needs no internet access. `DB_NULL_POOL=true` closes connections after each request instead of keeping connections open across warm Lambda invocations. Migrations do not run on cold start. `make aws-backend-migrate` runs them, and every `aws-backend-deploy` calls it.
+
+### GitHub Actions CI/CD
+
+`.github/workflows/deploy.yml` runs lint and tests for pull requests and pushes to `main`. Only a successful push to `main` runs the AWS deploy job. It builds the Lambda image with the commit SHA as its ECR tag, updates the existing Lambda, runs database migrations, builds and uploads the frontend, invalidates CloudFront, and checks the backend health endpoint.
+
+The CI job calls `make aws-app-deploy`, which publishes application code to the existing AWS resources. It does not run CloudFormation or change the database/network/auth infrastructure. Use `make aws-deploy` manually when first creating or intentionally updating those stacks.
+
+#### One-time AWS OIDC setup
+
+1. In AWS IAM, create the GitHub OIDC identity provider if it does not already exist:
+
+   - Provider URL: `https://token.actions.githubusercontent.com`
+   - Audience: `sts.amazonaws.com`
+
+   If it already exists, reuse its ARN; do not create a duplicate provider.
+
+2. Get the frontend `BucketName` and `DistributionId` outputs with `make aws-frontend-outputs`.
+3. Create the restricted deployment role stack using an AWS profile with IAM permissions:
+
+   ```bash
+   aws cloudformation deploy \
+     --profile spry-course \
+     --region us-east-1 \
+     --stack-name meetings-github-actions \
+     --template-file infra/github-actions-role.yaml \
+     --capabilities CAPABILITY_NAMED_IAM \
+     --parameter-overrides \
+       GitHubOidcProviderArn=arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com \
+       SiteBucketName=<frontend-bucket-name> \
+       CloudFrontDistributionId=<distribution-id>
+   ```
+
+   The trust policy accepts only `repo:chasyuk/OneTwoThree:ref:refs/heads/main`, with audience `sts.amazonaws.com`. Its permissions are limited to reading this app's stack outputs, pushing the backend image, updating/invoking the Lambda, publishing to the frontend bucket, and invalidating this CloudFront distribution.
+
+4. Get the role ARN from the `RoleArn` output of the `meetings-github-actions` stack. In GitHub, open **Settings → Secrets and variables → Actions → Variables**, create `AWS_DEPLOY_ROLE_ARN`, and set its value to that ARN. The variable is not a secret; no AWS keys should be added to GitHub.
+5. Push a branch and open a pull request to confirm the checks job runs without deploying. After merge to `main`, open **Actions → Checks and deploy** and inspect the deploy job. Its output includes the API health response and deployment URLs.
+
+The trust template uses GitHub's standard `repo:owner/name:ref:refs/heads/main` subject. If immutable OIDC subject claims are enabled for this repository, use the exact `sub` value GitHub issues for this repo in the role trust policy, keeping the repository and `main` branch restriction exact.
+
+#### Capture the meetings screenshot
+
+After a successful deployment, open the frontend URL above, sign up and confirm your email, then sign in. Open `/home`; add a meeting if the view is empty, then capture a screenshot showing the meetings calendar/list for the submission. Sign-in requires access to the email address used for the Cognito account.

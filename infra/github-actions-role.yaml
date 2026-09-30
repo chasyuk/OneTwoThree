@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Short-lived GitHub Actions role for publishing the Spry app. Trust is restricted to the main branch
+  of chasyuk/OneTwoThree; permissions cover only the existing app resources.
+
+Parameters:
+  GitHubOidcProviderArn:
+    Type: String
+    Description: ARN of the IAM OIDC provider for token.actions.githubusercontent.com (audience sts.amazonaws.com).
+  SiteBucketName:
+    Type: String
+    Description: BucketName output from the meetings-frontend CloudFormation stack.
+  CloudFrontDistributionId:
+    Type: String
+    Description: DistributionId output from the meetings-frontend CloudFormation stack.
+
+Resources:
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: spry-github-actions-deploy
+      Description: Publish Spry backend and frontend from GitHub Actions using OIDC.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: repo:chasyuk/OneTwoThree:ref:refs/heads/main
+      Policies:
+        - PolicyName: PublishSpryApplication
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadApplicationStackOutputs
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/meetings-*/*
+              - Sid: AuthenticateToEcr
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PushBackendImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/meetings-backend
+              - Sid: UpdateAndMigrateBackend
+                Effect: Allow
+                Action:
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:InvokeFunction
+                  - lambda:UpdateFunctionCode
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:meetings-backend
+              - Sid: ReadFrontendBucket
+                Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                Resource: !Sub arn:${AWS::Partition}:s3:::${SiteBucketName}
+              - Sid: PublishFrontendFiles
+                Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - s3:ListMultipartUploadParts
+                  - s3:PutObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${SiteBucketName}/*
+              - Sid: InvalidateFrontendCache
+                Effect: Allow
+                Action: cloudfront:CreateInvalidation
+                Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistributionId}
+      Tags:
+        - Key: PROJECT_NAME
+          Value: meetings
+
+Outputs:
+  RoleArn:
+    Description: Set this as the GitHub Actions repository variable AWS_DEPLOY_ROLE_ARN.
+    Value: !GetAtt GitHubDeployRole.Arn
