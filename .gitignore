@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 node_modules/
+.worktrees/
 dist/
 .idea/
 .DS_Store
