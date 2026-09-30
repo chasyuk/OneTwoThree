@@ -39,7 +39,11 @@ Resources:
               - Sid: ReadApplicationStackOutputs
                 Effect: Allow
                 Action: cloudformation:DescribeStacks
-                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/meetings-*/*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/meetings-backend/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/meetings-backend-ecr/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/meetings-frontend/*
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/meetings-cognito/*
               - Sid: AuthenticateToEcr
                 Effect: Allow
                 Action: ecr:GetAuthorizationToken

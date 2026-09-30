@@ -212,7 +212,7 @@ The CI job calls `make aws-app-deploy`, which publishes application code to the 
    If it already exists, reuse its ARN; do not create a duplicate provider.
 
 2. Get the frontend `BucketName` and `DistributionId` outputs with `make aws-frontend-outputs`.
-3. Create the restricted deployment role stack using an AWS profile with IAM permissions:
+3. Replace `PASTE_BUCKET_NAME_HERE` and `PASTE_DISTRIBUTION_ID_HERE` below with those output values, then create the restricted role stack using an AWS profile with IAM permissions:
 
    ```bash
    aws cloudformation deploy \
@@ -222,9 +222,9 @@ The CI job calls `make aws-app-deploy`, which publishes application code to the 
      --template-file infra/github-actions-role.yaml \
      --capabilities CAPABILITY_NAMED_IAM \
      --parameter-overrides \
-       GitHubOidcProviderArn=arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com \
-       SiteBucketName=<frontend-bucket-name> \
-       CloudFrontDistributionId=<distribution-id>
+       GitHubOidcProviderArn=arn:aws:iam::561721572034:oidc-provider/token.actions.githubusercontent.com \
+       SiteBucketName=PASTE_BUCKET_NAME_HERE \
+       CloudFrontDistributionId=PASTE_DISTRIBUTION_ID_HERE
    ```
 
    The trust policy accepts only `repo:chasyuk/OneTwoThree:ref:refs/heads/main`, with audience `sts.amazonaws.com`. Its permissions are limited to reading this app's stack outputs, pushing the backend image, updating/invoking the Lambda, publishing to the frontend bucket, and invalidating this CloudFront distribution.

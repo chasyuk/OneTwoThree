@@ -9,7 +9,7 @@ Deploy the existing Spry application from this fork to its already-provisioned A
 - The repository already has `make lint`, `make test`, and `make aws-deploy` targets.
 - AWS uses CloudFormation, an ECR container image for the Lambda backend, Lambda + RDS PostgreSQL, and a static frontend in S3 behind CloudFront.
 - The manual backend deploy pushes an image tagged `TAG`; the frontend deploy builds from the deployed API/Cognito outputs, uploads to S3, and invalidates CloudFront.
-- There is no `.github/workflows` workflow at present.
+- `.github/workflows/code-style.yml` already runs Python, frontend, and CloudFormation style checks on pull requests and pushes to `main`; the new pipeline consolidates those checks with tests and deployment to avoid duplicate workflows.
 
 ## Proposed design
 

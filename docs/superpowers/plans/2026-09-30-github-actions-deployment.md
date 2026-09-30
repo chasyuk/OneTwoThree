@@ -80,6 +80,7 @@
 
 **Files:**
 - Create: `.github/workflows/deploy.yml`
+- Delete: `.github/workflows/code-style.yml` (its checks are moved into the combined workflow)
 - Modify: `README.md`
 
 **Interfaces:**
