@@ -13,8 +13,7 @@ class Settings(BaseSettings):
     db_user: str = "meetings"
     db_password: str = "meetings"
     db_name: str = "meetings"
-    # Open a connection per request instead of pooling (Lambda + Aurora Serverless: idle pooled
-    # connections in warm execution environments would keep the database from pausing).
+    # Open a connection per request instead of pooling across Lambda execution environments.
     db_null_pool: bool = False
 
     cors_origins: str = "http://localhost:3000,http://localhost:5173"

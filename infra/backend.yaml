@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Meetings App - backend on AWS Lambda (container image) behind a public function URL,
-  PostgreSQL on Aurora Serverless v2 that scales to zero. No NAT gateway, no load balancer.
+  PostgreSQL on a single-AZ RDS instance. No NAT gateway, no load balancer.
 
 Parameters:
   ProjectName:
@@ -29,8 +29,7 @@ Parameters:
     Default: 30
     MinValue: 3
     MaxValue: 900
-    Description: >-
-      Seconds per request. Leave room for Aurora to resume from 0 ACU (about 15 s) on the first request.
+    Description: Seconds per request.
   CorsOrigins:
     Type: String
     Default: http://localhost:3000,http://localhost:5173
@@ -57,29 +56,11 @@ Parameters:
       The pool's public signing keys (JWKS JSON). Passed in because the function has no internet
       route to download them; Cognito does not rotate user pool keys.
 
-  # --- Database (Aurora Serverless v2, PostgreSQL) ---
+  # --- Database (RDS for PostgreSQL) ---
   DbEngineVersion:
     Type: String
-    Default: "16.14"
-    Description: Aurora PostgreSQL version; scaling to 0 ACU needs 13.15+, 14.12+, 15.7+ or 16.3+.
-  DbMinCapacity:
-    Type: Number
-    Default: 0
-    MinValue: 0
-    MaxValue: 256
-    Description: Minimum ACUs. 0 lets the database pause when idle, so you pay only for storage.
-  DbMaxCapacity:
-    Type: Number
-    Default: 1
-    MinValue: 1
-    MaxValue: 256
-    Description: Maximum ACUs (1 ACU is about 2 GiB of memory).
-  DbSecondsUntilAutoPause:
-    Type: Number
-    Default: 300
-    MinValue: 300
-    MaxValue: 86400
-    Description: Idle seconds without connections before the database pauses (only when DbMinCapacity is 0).
+    Default: "16.15"
+    Description: PostgreSQL version available for db.t3.micro in us-east-1.
   DbName:
     Type: String
     Default: meetings
@@ -94,7 +75,7 @@ Parameters:
 
 Resources:
   # =====================================================================
-  # Network: two private subnets (Aurora needs two AZs). Nothing here is reachable from the
+  # Network: two private subnets (RDS subnet groups span two AZs). Nothing here is reachable from the
   # internet; the function URL is served by the Lambda service, not from inside the VPC.
   # =====================================================================
   Vpc:
@@ -156,7 +137,7 @@ Resources:
   # =====================================================================
   # Database
   # =====================================================================
-  # Generated once; resolved at deploy time into the cluster and the function's environment,
+  # Generated once; resolved at deploy time into the database and the function's environment,
   # so the Lambda needs no route to Secrets Manager (and the VPC no NAT gateway or endpoint).
   DbSecret:
     Type: AWS::SecretsManager::Secret
@@ -164,7 +145,7 @@ Resources:
       Tags:
         - Key: PROJECT_NAME
           Value: !Ref ProjectName
-      Description: !Sub Master credentials of the ${ProjectName} Aurora cluster
+      Description: !Sub Master credentials of the ${ProjectName} PostgreSQL database
       GenerateSecretString:
         SecretStringTemplate: !Sub '{"username": "${DbUsername}"}'
         GenerateStringKey: password
@@ -180,8 +161,8 @@ Resources:
       DBSubnetGroupDescription: !Sub ${ProjectName} database subnets
       SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
 
-  DbCluster:
-    Type: AWS::RDS::DBCluster
+  DbInstance:
+    Type: AWS::RDS::DBInstance
     # A final snapshot is kept when the stack is deleted.
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
@@ -189,34 +170,23 @@ Resources:
       Tags:
         - Key: PROJECT_NAME
           Value: !Ref ProjectName
-      DBClusterIdentifier: !Sub ${ProjectName}-db
-      Engine: aurora-postgresql
+      DBInstanceIdentifier: !Sub ${ProjectName}-db
+      Engine: postgres
       EngineVersion: !Ref DbEngineVersion
-      DatabaseName: !Ref DbName
+      DBInstanceClass: db.t3.micro
+      DBName: !Ref DbName
       MasterUsername: !Ref DbUsername
       MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
       DBSubnetGroupName: !Ref DbSubnetGroup
-      VpcSecurityGroupIds: [!Ref DbSecurityGroup]
+      VPCSecurityGroups: [!Ref DbSecurityGroup]
+      AllocatedStorage: 20
+      StorageType: gp2
       StorageEncrypted: true
-      CopyTagsToSnapshot: true
-      BackupRetentionPeriod: !Ref DbBackupRetentionDays
-      DeletionProtection: false
-      ServerlessV2ScalingConfiguration:
-        MinCapacity: !Ref DbMinCapacity
-        MaxCapacity: !Ref DbMaxCapacity
-        SecondsUntilAutoPause: !Ref DbSecondsUntilAutoPause
-
-  DbInstance:
-    Type: AWS::RDS::DBInstance
-    Properties:
-      Tags:
-        - Key: PROJECT_NAME
-          Value: !Ref ProjectName
-      DBInstanceIdentifier: !Sub ${ProjectName}-db-1
-      DBClusterIdentifier: !Ref DbCluster
-      Engine: aurora-postgresql
-      DBInstanceClass: db.serverless
+      MultiAZ: false
       PubliclyAccessible: false
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      CopyTagsToSnapshot: true
+      DeletionProtection: false
       AutoMinorVersionUpgrade: true
       EnablePerformanceInsights: false
 
@@ -272,12 +242,12 @@ Resources:
         SecurityGroupIds: [!Ref BackendSecurityGroup]
       Environment:
         Variables:
-          DB_HOST: !GetAtt DbCluster.Endpoint.Address
-          DB_PORT: !GetAtt DbCluster.Endpoint.Port
+          DB_HOST: !GetAtt DbInstance.Endpoint.Address
+          DB_PORT: !GetAtt DbInstance.Endpoint.Port
           DB_NAME: !Ref DbName
           DB_USER: !Ref DbUsername
           DB_PASSWORD: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
-          # Close connections after each request: Aurora pauses only when none are open.
+          # Close connections after each request rather than reusing Lambda execution-environment connections.
           DB_NULL_POOL: "true"
           CORS_ORIGINS: !Ref CorsOrigins
           SEED: !Ref Seed
@@ -322,8 +292,8 @@ Outputs:
   LogGroupName:
     Value: !Ref BackendLogGroup
   DbEndpoint:
-    Description: Aurora writer endpoint (reachable only from inside the VPC).
-    Value: !GetAtt DbCluster.Endpoint.Address
+    Description: RDS PostgreSQL endpoint (reachable only from inside the VPC).
+    Value: !GetAtt DbInstance.Endpoint.Address
   DbSecretArn:
     Description: Secrets Manager secret with the database master credentials.
     Value: !Ref DbSecret

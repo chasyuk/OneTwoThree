@@ -48,7 +48,7 @@ front/            # Vite + React + TypeScript + Tailwind + shadcn/ui
     lib/auth.ts   # Cognito sign-in/up, session and token refresh, Google (Hosted UI + PKCE)
     lib/api.ts    # typed fetch wrapper (VITE_API_URL = backend origin, empty = same origin)
   nginx.conf      # serves the SPA, proxies /api to backend
-infra/            # CloudFormation: cognito, backend-ecr, backend (Lambda + Aurora), frontend (S3 + CloudFront)
+infra/            # CloudFormation: cognito, backend-ecr, backend (Lambda + RDS PostgreSQL), frontend (S3 + CloudFront)
 ```
 
 ## API
@@ -139,24 +139,24 @@ CI (`.github/workflows/code-style.yml`) runs on every push to `main` and on pull
 
 Config lives in `back/pyproject.toml` (`[tool.ruff]`), `front/eslint.config.js` and `front/.prettierrc.json`.
 
-## Deploy to AWS (backend on Lambda + Aurora Serverless, frontend on CloudFront)
+## Deploy to AWS (backend on Lambda + RDS PostgreSQL, frontend on CloudFront)
 
 Everything is deployed to **us-east-1**. CloudFront accepts custom-domain certificates only from that region. Infrastructure is CloudFormation in `infra/`:
 
 - `infra/cognito.yaml`: Cognito user pool (email + password, self sign-up with email code), public app client, Hosted UI domain, and Google as an identity provider when `GOOGLE_CLIENT_ID` is set.
 - `infra/backend-ecr.yaml`: ECR repository for the backend's Lambda container image (`back/Dockerfile.lambda`).
-- `infra/backend.yaml`: VPC with private subnets, Aurora Serverless v2 PostgreSQL (scales to 0 ACU when idle), and a Lambda function with a public **function URL**, which is the backend URL.
-- `infra/frontend.yaml`: private S3 bucket and CloudFront distribution for the SPA on the **flat-rate Free plan** ($0/month, with the WAF web ACL the plan requires), with an optional custom domain.
+- `infra/backend.yaml`: VPC with private subnets, a single-AZ RDS for PostgreSQL instance (`db.t3.micro`, 20 GiB gp2), and a Lambda function with a public **function URL**, which is the backend URL.
+- `infra/frontend.yaml`: private S3 bucket and CloudFront distribution for the SPA using pay-as-you-go pricing, with an optional custom domain. AWS Free account plans cannot use CloudFront flat-rate plans.
 
 Every resource carries the tag `PROJECT_NAME=<project>`. It is set in the templates and as a stack tag, and `cert.sh` puts it on the ACM certificate. Some resource types can't be tagged in AWS at all: function URLs, Lambda permissions, the bucket policy, the CloudFront origin access control, Route 53 records and the pricing plan subscription.
 
 ```mermaid
 flowchart LR
-    B[Browser] -->|HTTPS| CF[CloudFront + WAF<br/>Free plan, optional custom domain]
+    B[Browser] -->|HTTPS| CF[CloudFront<br/>pay-as-you-go, optional custom domain]
     CF --> S3[(S3<br/>built SPA)]
     B -->|HTTPS, CORS| URL[Lambda function URL]
     URL --> L[Lambda<br/>FastAPI via Mangum<br/>private subnets]
-    L -->|:5432| DB[(Aurora Serverless v2<br/>PostgreSQL, private subnets)]
+    L -->|:5432| DB[(RDS PostgreSQL<br/>db.t3.micro, private subnets)]
     L -. image .-> ECR[ECR]
 ```
 
@@ -167,8 +167,8 @@ flowchart LR
    AWS_SECRET_ACCESS_KEY=...
    ```
 
-2. Optionally copy `infra/backend.params.example.env` to `infra/backend.params.env` to override stack parameters (memory, Aurora capacity, seeding, …).
-3. Deploy. The first run takes about 15 minutes, mostly waiting for Aurora and CloudFront:
+2. Optionally copy `infra/backend.params.example.env` to `infra/backend.params.env` to override stack parameters (memory, PostgreSQL version, seeding, …).
+3. Deploy. The first run takes about 15 minutes, mostly waiting for RDS and CloudFront:
 
    ```bash
    make aws-deploy   # = aws-cognito-deploy, aws-backend-deploy, then aws-frontend-deploy
@@ -180,7 +180,7 @@ flowchart LR
    2. **Backend** (`make aws-backend-deploy`): ECR stack → build and push the Lambda image → backend stack → `aws-backend-migrate` invokes the function with `{"action": "migrate"}` to run Alembic and seeding. It prints the function URL (`https://<id>.lambda-url.us-east-1.on.aws/`).
    3. **Frontend** (`make aws-frontend-deploy`): frontend stack → `npm run build` with `VITE_API_URL=<function URL>` and the `VITE_COGNITO_*` IDs → upload to S3 and invalidate CloudFront → allow the site's origin in the backend's `CORS_ORIGINS` and as a Cognito redirect URL. It prints the site URL.
 
-Other targets: `make aws-backend-outputs`, `aws-backend-status`, `aws-backend-logs`, `aws-backend-health`, `aws-backend-migrate`, `aws-frontend-outputs`, `aws-frontend-publish` (rebuild and upload the frontend only), `aws-destroy`. Use `ARCH=amd64` to build an x86 Lambda instead of Graviton (`arm64`, the default). Use `CLOUDFRONT_PLAN=PAY_AS_YOU_GO` if the account can't subscribe to the Free plan (accounts on the AWS Free Tier are not eligible, and each account gets at most 3 free plans).
+Other targets: `make aws-backend-outputs`, `aws-backend-status`, `aws-backend-logs`, `aws-backend-health`, `aws-backend-migrate`, `aws-frontend-outputs`, `aws-frontend-publish` (rebuild and upload the frontend only), `aws-destroy`. Use `ARCH=amd64` to build an x86 Lambda instead of Graviton (`arm64`, the default). CloudFront defaults to `PAY_AS_YOU_GO`; AWS Free account plans cannot use CloudFront flat-rate plans. CloudFront has separate free usage allowances under pay-as-you-go pricing, and AWS's Free account plan does not bill usage while active.
 
 ### Custom domain for the frontend (optional)
 
@@ -197,6 +197,6 @@ make aws-frontend-https-check # 3. curl https://onetwothree.dobosevych.com/
 
 `make aws-frontend-cert-status` and `make aws-frontend-dns` show the records again. Once the certificate is issued, every later `make aws-deploy` keeps the domain. The backend stays on its function URL.
 
-**Cost.** There is no load balancer, NAT gateway or public IPv4 address. Lambda and function URLs fit in the always-free tier for a small app. CloudFront runs on the flat-rate Free plan, which costs $0 with no overage charges and also covers its WAF web ACL (a per-IP rate limit). Requests that WAF blocks don't count toward the plan's allowance. Aurora Serverless v2 has no free tier. With `DbMinCapacity=0` it pauses after 5 idle minutes, and then you pay only for storage (about $0.10/GB-month). While active it costs about $0.12 per ACU-hour. The first request after a pause waits about 15 seconds while Aurora resumes. The DB credentials secret costs $0.40/month. Run `make aws-destroy` when you are done. It keeps a final Aurora snapshot.
+**Cost and Free plan.** The database uses RDS for PostgreSQL on the Free Tier eligible `db.t3.micro` Single-AZ class, with 20 GiB of gp2 storage and one-day automated backups. AWS documents `db.t3.micro` PostgreSQL and Single-AZ as Free Tier eligible; eligibility duration and allowances depend on the account's Free Tier offer. The AWS Free account plan does not bill usage while active, and closes when six months pass or credits are exhausted, whichever comes first. Monitor the Cost and Usage widget in the AWS Console; the app and its data become unavailable when that plan closes. The credentials secret and other resources may consume Free Tier credits. Keep the database within its eligible limits and run `make aws-destroy` when you are done. The database stack retains a final RDS snapshot, which remains in the account until you delete it.
 
-On AWS the backend reads `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` instead of `DATABASE_URL`. The password is generated in Secrets Manager and resolved into the function's environment at deploy time, so the VPC needs no internet access. `DB_NULL_POOL=true` closes connections after each request, because idle connections from warm Lambdas would stop Aurora from pausing. Migrations do not run on cold start. `make aws-backend-migrate` runs them, and every `aws-backend-deploy` calls it.
+On AWS the backend reads `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` instead of `DATABASE_URL`. The password is generated in Secrets Manager and resolved into the function's environment at deploy time, so the VPC needs no internet access. `DB_NULL_POOL=true` closes connections after each request instead of keeping connections open across warm Lambda invocations. Migrations do not run on cold start. `make aws-backend-migrate` runs them, and every `aws-backend-deploy` calls it.

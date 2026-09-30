@@ -35,9 +35,8 @@ COGNITO_STACK     := $(PROJECT)-cognito
 # Every resource gets this tag (in the templates and as a stack tag).
 STACK_TAGS        := PROJECT_NAME=$(PROJECT)
 
-# CloudFront flat-rate Free plan ($0/month); PAY_AS_YOU_GO if the account can't subscribe (AWS Free Tier
-# accounts, or 3 free plans already in use).
-CLOUDFRONT_PLAN   ?= FREE
+# AWS Free plan accounts can't subscribe to CloudFront flat-rate plans, so default to usage billing.
+CLOUDFRONT_PLAN   ?= PAY_AS_YOU_GO
 
 # Optional custom domain for the frontend (`make aws-frontend-https`); empty = CloudFront domain only.
 FRONTEND_DOMAIN   ?= onetwothree.dobosevych.com
@@ -148,7 +147,7 @@ format: ## Auto-format backend and frontend
 	cd back && uv run ruff check --fix . && uv run ruff format .
 	cd front && npm run format
 
-##@ AWS backend (Lambda + Aurora Serverless v2 via CloudFormation)
+##@ AWS backend (Lambda + RDS PostgreSQL via CloudFormation)
 
 .PHONY: aws-check
 aws-check: ## Verify AWS credentials from .env work
@@ -156,7 +155,7 @@ aws-check: ## Verify AWS credentials from .env work
 	  || { echo "AWS credentials missing/invalid: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env"; exit 1; }
 
 .PHONY: aws-backend-deploy
-aws-backend-deploy: aws-check aws-backend-ecr aws-backend-push aws-backend-stack aws-backend-migrate ## Deploy backend: ECR, image, Aurora, Lambda + function URL, migrations
+aws-backend-deploy: aws-check aws-backend-ecr aws-backend-push aws-backend-stack aws-backend-migrate ## Deploy backend: ECR, image, RDS PostgreSQL, Lambda + function URL, migrations
 	@echo
 	@echo "API:      $(API_URL)"
 	@echo "API docs: $(call backend_output,ApiDocsUrl)"
@@ -178,7 +177,7 @@ aws-backend-push: aws-backend-login ## Build the Lambda image for linux/$(ARCH) 
 	  -t $(ECR_URI):$(TAG) -t $(ECR_URI):latest --push back
 
 .PHONY: aws-backend-stack
-aws-backend-stack: ## Create/update the backend stack (VPC, Aurora, Lambda) with image tag $(TAG); KEEP_IMAGE=1 keeps the current image
+aws-backend-stack: ## Create/update the backend stack (VPC, RDS PostgreSQL, Lambda) with image tag $(TAG); KEEP_IMAGE=1 keeps the current image
 	$(call clear_failed_stack,$(BACKEND_STACK))
 	@test -n "$(ECR_URI)" || { echo "ECR repository not found: run \`make aws-backend-ecr\` first (and check AWS credentials in .env)"; exit 1; }
 	@test -n "$(COGNITO_POOL_ID)" || { echo "Cognito not deployed: run \`make aws-cognito-deploy\` first"; exit 1; }
@@ -205,30 +204,30 @@ aws-backend-outputs: ## Show backend stack outputs (API URL, DB endpoint, ...)
 	  --query "Stacks[0].Outputs[].[OutputKey, OutputValue]" --output table
 
 .PHONY: aws-backend-status
-aws-backend-status: ## Show Lambda and Aurora status
+aws-backend-status: ## Show Lambda and RDS PostgreSQL status
 	@aws lambda get-function-configuration --function-name $(BACKEND_FUNCTION) \
 	  --query "{state:State, lastUpdate:LastUpdateStatus, image:CodeSha256, memory:MemorySize, timeout:Timeout}" --output yaml
-	@aws rds describe-db-clusters --db-cluster-identifier $(PROJECT)-db \
-	  --query "DBClusters[0].{status:Status, capacity:ServerlessV2ScalingConfiguration}" --output yaml
+	@aws rds describe-db-instances --db-instance-identifier $(PROJECT)-db \
+	  --query "DBInstances[0].{status:DBInstanceStatus, class:DBInstanceClass, engine:EngineVersion, storageGiB:AllocatedStorage, multiAZ:MultiAZ}" --output yaml
 
 .PHONY: aws-backend-logs
 aws-backend-logs: ## Tail backend logs from CloudWatch
 	aws logs tail /aws/lambda/$(BACKEND_FUNCTION) --follow --since 30m
 
 .PHONY: aws-backend-health
-aws-backend-health: ## Call /api/health on the function URL (the first call after a pause wakes Aurora, ~15 s)
+aws-backend-health: ## Call /api/health on the function URL
 	curl -fsS --max-time 60 $(API_URL)api/health && echo
 
 .PHONY: aws-backend-destroy
-aws-backend-destroy: aws-check ## Delete backend stacks (a final Aurora snapshot is kept)
+aws-backend-destroy: aws-check ## Delete backend stacks (a final RDS DB snapshot is kept)
 	@read -p "Delete stacks $(BACKEND_STACK) and $(BACKEND_ECR_STACK) in $(AWS_REGION)? [y/N] " ok && [ "$$ok" = y ]
 	aws cloudformation delete-stack --stack-name $(BACKEND_STACK)
 	aws cloudformation wait stack-delete-complete --stack-name $(BACKEND_STACK)
 	aws cloudformation delete-stack --stack-name $(BACKEND_ECR_STACK)
 	aws cloudformation wait stack-delete-complete --stack-name $(BACKEND_ECR_STACK)
-	@echo "Done. Remove the final snapshot with: aws rds describe-db-cluster-snapshots --snapshot-type manual"
+	@echo "Done. List the final snapshot with: aws rds describe-db-snapshots --snapshot-type manual"
 
-##@ AWS frontend (S3 + CloudFront on the flat-rate Free plan, built with the backend URL)
+##@ AWS frontend (S3 + CloudFront, built with the backend URL)
 
 .PHONY: aws-frontend-deploy
 aws-frontend-deploy: aws-check aws-frontend-stack aws-frontend-publish aws-frontend-cors ## Deploy frontend: stack, build with the API URL, upload, allow its origin in the API and Cognito
@@ -236,7 +235,7 @@ aws-frontend-deploy: aws-check aws-frontend-stack aws-frontend-publish aws-front
 	@echo "Site: $(call frontend_output,SiteUrl)"
 
 .PHONY: aws-frontend-stack
-aws-frontend-stack: ## Create/update the frontend stack (S3, CloudFront + WAF on the Free plan, custom domain once its certificate is issued)
+aws-frontend-stack: ## Create/update the frontend stack (S3, CloudFront, custom domain once its certificate is issued)
 	$(call clear_failed_stack,$(FRONTEND_STACK))
 	aws cloudformation deploy --stack-name $(FRONTEND_STACK) --template-file infra/frontend.yaml \
 	  --no-fail-on-empty-changeset --tags $(STACK_TAGS) \
