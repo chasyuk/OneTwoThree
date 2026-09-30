@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Keep `origin` and GitHub unchanged unless the user explicitly authorizes a push.
-- Never store AWS access keys in GitHub; use `token.actions.githubusercontent.com` OIDC and restrict trust to `repo:chasyuk/OneTwoThree:ref:refs/heads/main`.
+- Never store AWS access keys in GitHub; use `token.actions.githubusercontent.com` OIDC and restrict trust to this repository's exact immutable `sub` claim and the `main` branch.
 - Pull requests run checks only; only successful pushes to `main` deploy.
 - Use the new `make aws-app-deploy` target and deploy the backend image with the full commit SHA as `TAG`.
 - Keep infrastructure changes out of routine CI releases; `make aws-deploy` remains available for intentional CloudFormation provisioning or updates.
@@ -66,7 +66,7 @@
 
 - [x] **Step 1: Define the OIDC provider/role trust configuration**
 
-  Include audience `sts.amazonaws.com` and an exact `sub` match for `repo:chasyuk/OneTwoThree:ref:refs/heads/main`. Avoid wildcard repository or branch matching.
+  Include audience `sts.amazonaws.com` and an exact immutable `sub` match for this repository and `main` branch. Avoid wildcard repository or branch matching.
 
 - [x] **Step 2: Add the deployment role permissions needed by this repository**
 

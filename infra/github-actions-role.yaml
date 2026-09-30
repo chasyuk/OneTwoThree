@@ -30,7 +30,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: repo:chasyuk/OneTwoThree:ref:refs/heads/main
+                token.actions.githubusercontent.com:sub: repo:chasyuk@236181873/OneTwoThree@1396210868:ref:refs/heads/main
       Policies:
         - PolicyName: PublishSpryApplication
           PolicyDocument:

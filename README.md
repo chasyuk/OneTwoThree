@@ -227,12 +227,12 @@ The CI job calls `make aws-app-deploy`, which publishes application code to the 
        CloudFrontDistributionId=PASTE_DISTRIBUTION_ID_HERE
    ```
 
-   The trust policy accepts only `repo:chasyuk/OneTwoThree:ref:refs/heads/main`, with audience `sts.amazonaws.com`. Its permissions are limited to reading this app's stack outputs, pushing the backend image, updating/invoking the Lambda, publishing to the frontend bucket, and invalidating this CloudFront distribution.
+   The trust policy accepts only `repo:chasyuk@236181873/OneTwoThree@1396210868:ref:refs/heads/main`, with audience `sts.amazonaws.com`. GitHub adds the stable owner and repository IDs to this repository's OIDC subject. The role permissions are limited to reading this app's stack outputs, pushing the backend image, updating/invoking the Lambda, publishing to the frontend bucket, and invalidating this CloudFront distribution.
 
 4. Get the role ARN from the `RoleArn` output of the `meetings-github-actions` stack. In GitHub, open **Settings → Secrets and variables → Actions → Variables**, create `AWS_DEPLOY_ROLE_ARN`, and set its value to that ARN. The variable is not a secret; no AWS keys should be added to GitHub.
 5. Push a branch and open a pull request to confirm the checks job runs without deploying. After merge to `main`, open **Actions → Checks and deploy** and inspect the deploy job. Its output includes the API health response and deployment URLs.
 
-The trust template uses GitHub's standard `repo:owner/name:ref:refs/heads/main` subject. If immutable OIDC subject claims are enabled for this repository, use the exact `sub` value GitHub issues for this repo in the role trust policy, keeping the repository and `main` branch restriction exact.
+The trust template uses this repository's immutable OIDC subject, which includes the stable owner and repository IDs. GitHub's subject format depends on repository age and whether immutable claims are enabled, so do not copy this trust policy unchanged to a different repository.
 
 #### Capture the meetings screenshot
 
