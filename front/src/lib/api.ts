@@ -1,4 +1,4 @@
-import { getIdToken, signOut } from "@/lib/auth"
+import { cognitoLogoutUrl, getIdToken, hostedLoginEnabled, signOut } from "@/lib/auth"
 import type {
   Meeting,
   MeetingCreate,
@@ -48,7 +48,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // Session gone or rejected: back to the sign-in page.
   if (response.status === 401) {
     signOut()
-    window.location.assign("/")
+    window.location.assign(hostedLoginEnabled() ? cognitoLogoutUrl() : "/")
   }
 
   if (!response.ok) {

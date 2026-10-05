@@ -35,6 +35,7 @@ Resources:
     Type: AWS::Cognito::UserPool
     Properties:
       UserPoolName: !Sub ${ProjectName}-users
+      UserPoolTier: ESSENTIALS
       UserPoolTags:
         PROJECT_NAME: !Ref ProjectName
       # Users sign in with their email; Cognito sends a code to verify it on sign-up.
@@ -59,8 +60,18 @@ Resources:
       EmailConfiguration:
         EmailSendingAccount: COGNITO_DEFAULT
       Schema:
-        - { Name: email, AttributeDataType: String, Required: true, Mutable: true }
-        - { Name: name, AttributeDataType: String, Required: false, Mutable: true }
+        - {
+            Name: email,
+            AttributeDataType: String,
+            Required: true,
+            Mutable: true,
+          }
+        - {
+            Name: name,
+            AttributeDataType: String,
+            Required: false,
+            Mutable: true,
+          }
 
   # Hosted UI / OAuth endpoints, needed for federated sign-in (Google). The prefix must be unique
   # across AWS, hence the account ID.
@@ -69,6 +80,7 @@ Resources:
     Properties:
       UserPoolId: !Ref UserPool
       Domain: !Sub ${ProjectName}-${AWS::AccountId}
+      ManagedLoginVersion: 2
 
   GoogleIdentityProvider:
     Type: AWS::Cognito::UserPoolIdentityProvider
@@ -117,6 +129,13 @@ Resources:
       AllowedOAuthScopes: [openid, email, profile]
       CallbackURLs: !Ref CallbackUrls
       LogoutURLs: !Ref LogoutUrls
+
+  ManagedLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientId: !Ref UserPoolClient
+      UseCognitoProvidedValues: true
 
 Outputs:
   UserPoolId:

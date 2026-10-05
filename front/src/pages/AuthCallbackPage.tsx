@@ -1,40 +1,27 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect } from "react"
 import { LoaderCircle } from "lucide-react"
-import { Link, useNavigate, useSearchParams } from "react-router"
+import { useAuth } from "react-oidc-context"
+import { Link, useNavigate } from "react-router"
 
 import { AuthLayout } from "@/components/auth/AuthLayout"
-import { completeOAuthSignIn } from "@/lib/auth"
 
-/** Where the Cognito Hosted UI sends the browser back after Google sign-in. */
+/** react-oidc-context completes the Cognito authorization-code callback before this page renders. */
 export function AuthCallbackPage() {
+  const auth = useAuth()
   const navigate = useNavigate()
-  const [params] = useSearchParams()
-  const code = params.get("code")
-  const state = params.get("state")
-  // No code means the Hosted UI came back with an error (or the user cancelled).
-  const redirectError =
-    code && state ? null : (params.get("error_description") ?? "Sign-in was cancelled")
-  const [exchangeError, setExchangeError] = useState<string | null>(null)
-  const error = redirectError ?? exchangeError
-  // The code can be exchanged only once; StrictMode runs effects twice in development.
-  const started = useRef(false)
 
   useEffect(() => {
-    if (!code || !state || started.current) return
-    started.current = true
-    completeOAuthSignIn(code, state)
-      .then(() => navigate("/home", { replace: true }))
-      .catch((err: Error) => setExchangeError(err.message))
-  }, [code, state, navigate])
+    if (auth.isAuthenticated) navigate("/home", { replace: true })
+  }, [auth.isAuthenticated, navigate])
 
   return (
     <AuthLayout>
-      {error ? (
+      {auth.error ? (
         <div role="alert">
           <h1 className="text-2xl font-semibold text-foreground">Sign-in failed</h1>
-          <p className="mt-2 text-sm text-muted-foreground">{error}</p>
+          <p className="mt-2 text-sm text-muted-foreground">{auth.error.message}</p>
           <Link
-            to="/"
+            to="/login/"
             className="mt-6 inline-block font-medium text-primary underline-offset-4 hover:underline"
           >
             Back to sign in

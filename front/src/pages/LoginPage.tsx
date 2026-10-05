@@ -1,7 +1,9 @@
+import { useEffect, useRef, useState } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { CircleCheck } from "lucide-react"
-import { Link, useLocation, useNavigate } from "react-router"
+import { useAuth } from "react-oidc-context"
+import { Link, Navigate, useLocation, useNavigate } from "react-router"
 import { z } from "zod"
 
 import { AuthLayout } from "@/components/auth/AuthLayout"
@@ -17,7 +19,7 @@ import {
   FormMessage,
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
-import { AuthError, signIn } from "@/lib/auth"
+import { AuthError, hostedLoginEnabled, signIn } from "@/lib/auth"
 
 const loginSchema = z.object({
   email: z.email("Enter a valid email"),
@@ -33,6 +35,51 @@ interface LoginState {
 }
 
 export function LoginPage() {
+  return <LocalLoginPage />
+}
+
+export function ManagedLoginPage() {
+  return hostedLoginEnabled() ? <CognitoLoginRedirect /> : <Navigate to="/" replace />
+}
+
+function CognitoLoginRedirect() {
+  const auth = useAuth()
+  const { activeNavigator, isAuthenticated, isLoading, signinRedirect } = auth
+  const [error, setError] = useState<string | null>(null)
+  const started = useRef(false)
+
+  useEffect(() => {
+    if (isLoading || isAuthenticated || activeNavigator || started.current) return
+    started.current = true
+    void signinRedirect().catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : "Could not open the sign-in page")
+    })
+  }, [activeNavigator, isAuthenticated, isLoading, signinRedirect])
+
+  if (isAuthenticated) return <Navigate to="/home" replace />
+
+  return (
+    <AuthLayout>
+      {error ? (
+        <div role="alert">
+          <h1 className="text-2xl font-semibold text-foreground">Could not open sign-in</h1>
+          <p className="mt-2 text-sm text-muted-foreground">{error}</p>
+          <button
+            type="button"
+            className="mt-6 font-medium text-primary underline-offset-4 hover:underline"
+            onClick={() => window.location.reload()}
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">Opening secure sign-in…</p>
+      )}
+    </AuthLayout>
+  )
+}
+
+function LocalLoginPage() {
   const navigate = useNavigate()
   const state = (useLocation().state ?? {}) as LoginState
   const form = useForm<LoginValues>({

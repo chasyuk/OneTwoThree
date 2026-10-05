@@ -186,6 +186,7 @@ aws-app-deploy: aws-check aws-backend-push ## Release app code only: update Lamb
 	$(MAKE) --no-print-directory aws-frontend-publish
 	$(MAKE) --no-print-directory aws-backend-health
 	@echo "Frontend: $(call frontend_output,SiteUrl)"
+	@echo "Login:    $(call frontend_output,SiteUrl)/login/"
 	@echo "Backend:  $(API_URL)"
 
 .PHONY: aws-backend-stack
@@ -245,6 +246,7 @@ aws-backend-destroy: aws-check ## Delete backend stacks (a final RDS DB snapshot
 aws-frontend-deploy: aws-check aws-frontend-stack aws-frontend-publish aws-frontend-cors ## Deploy frontend: stack, build with the API URL, upload, allow its origin in the API and Cognito
 	@echo
 	@echo "Site: $(call frontend_output,SiteUrl)"
+	@echo "Login: $(call frontend_output,SiteUrl)/login/"
 
 .PHONY: aws-frontend-stack
 aws-frontend-stack: ## Create/update the frontend stack (S3, CloudFront, custom domain once its certificate is issued)

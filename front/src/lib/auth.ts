@@ -1,7 +1,8 @@
+import type { User as OidcUser } from "oidc-client-ts"
+
 /**
- * Sign-in with Amazon Cognito, straight from the browser (no SDK): email + password through the
- * Cognito API, Google through the Hosted UI (OAuth code flow with PKCE). The ID token is sent to
- * our API, which verifies it.
+ * Cognito issues the browser session through managed login (authorization code + PKCE). The app
+ * keeps the ID token for its API calls; the backend verifies it.
  *
  * Without VITE_COGNITO_CLIENT_ID (local development without AWS) auth is disabled: any valid form
  * "signs in" and the backend treats every request as one local user.
@@ -9,6 +10,7 @@
 
 export interface AuthConfig {
   region: string
+  userPoolId: string
   clientId: string
   domain: string
   googleEnabled: boolean
@@ -18,6 +20,7 @@ export function authConfig(): AuthConfig {
   const env = import.meta.env
   return {
     region: env.VITE_COGNITO_REGION || "us-east-1",
+    userPoolId: env.VITE_COGNITO_USER_POOL_ID ?? "",
     clientId: env.VITE_COGNITO_CLIENT_ID ?? "",
     domain: env.VITE_COGNITO_DOMAIN ?? "",
     googleEnabled: env.VITE_COGNITO_GOOGLE === "true" && Boolean(env.VITE_COGNITO_DOMAIN),
@@ -25,7 +28,18 @@ export function authConfig(): AuthConfig {
 }
 
 export const authEnabled = () => Boolean(authConfig().clientId)
-export const googleEnabled = () => authEnabled() && authConfig().googleEnabled
+export const hostedLoginEnabled = () =>
+  Boolean(authConfig().userPoolId && authConfig().clientId && authConfig().domain)
+export const googleEnabled = () =>
+  authEnabled() && Boolean(authConfig().domain) && authConfig().googleEnabled
+
+export const cognitoAuthority = () => {
+  const { region, userPoolId } = authConfig()
+  return `https://cognito-idp.${region}.amazonaws.com/${userPoolId || `${region}_local`}`
+}
+
+export const oidcUserStorageKey = () =>
+  `oidc.user:${cognitoAuthority()}:${authConfig().clientId || "local"}`
 
 /** Cognito error with its exception name, e.g. NotAuthorizedException. */
 export class AuthError extends Error {
@@ -117,6 +131,33 @@ export const isSignedIn = () => readSession() !== null
 
 export function signOut() {
   writeSession(null)
+  try {
+    localStorage.removeItem(oidcUserStorageKey())
+  } catch {
+    // Storage unavailable.
+  }
+}
+
+export function cognitoLogoutUrl() {
+  const { clientId, domain } = authConfig()
+  const params = new URLSearchParams({
+    client_id: clientId,
+    logout_uri: `${window.location.origin}/`,
+  })
+  return `https://${domain}/logout?${params}`
+}
+
+/** Copy the library-managed OIDC session into the app's token helper. */
+export function saveOidcSession(user?: OidcUser) {
+  if (!user?.id_token) return
+  saveTokens(
+    {
+      IdToken: user.id_token,
+      RefreshToken: user.refresh_token,
+      ExpiresIn: user.expires_in ?? 3600,
+    },
+    user.refresh_token,
+  )
 }
 
 /** A valid ID token for the API, refreshed when about to expire; null when signed out. */
@@ -182,67 +223,4 @@ export async function confirmSignUp(email: string, code: string): Promise<void> 
 export async function resendCode(email: string): Promise<void> {
   if (!authEnabled()) return
   await cognito("ResendConfirmationCode", { Username: email })
-}
-
-// --- Google (Hosted UI, authorization code + PKCE) ---
-
-const PKCE_KEY = "meetings.pkce"
-export const callbackUrl = () => `${window.location.origin}/auth/callback`
-
-function base64Url(bytes: ArrayBuffer | Uint8Array): string {
-  const binary = String.fromCharCode(...new Uint8Array(bytes))
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
-}
-
-export async function startGoogleSignIn(): Promise<void> {
-  const { clientId, domain } = authConfig()
-  const verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)))
-  const state = base64Url(crypto.getRandomValues(new Uint8Array(16)))
-  const challenge = base64Url(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
-  )
-  sessionStorage.setItem(PKCE_KEY, JSON.stringify({ verifier, state }))
-  const params = new URLSearchParams({
-    identity_provider: "Google",
-    response_type: "code",
-    client_id: clientId,
-    redirect_uri: callbackUrl(),
-    scope: "openid email profile",
-    state,
-    code_challenge_method: "S256",
-    code_challenge: challenge,
-  })
-  window.location.assign(`https://${domain}/oauth2/authorize?${params}`)
-}
-
-/** Exchanges the code from the Hosted UI redirect for tokens. */
-export async function completeOAuthSignIn(code: string, state: string): Promise<void> {
-  const { clientId, domain } = authConfig()
-  const saved = JSON.parse(sessionStorage.getItem(PKCE_KEY) ?? "null") as {
-    verifier: string
-    state: string
-  } | null
-  sessionStorage.removeItem(PKCE_KEY)
-  if (!saved || saved.state !== state) {
-    throw new AuthError("StateMismatch", "Sign-in expired or was started elsewhere, try again")
-  }
-  const response = await fetch(`https://${domain}/oauth2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      client_id: clientId,
-      code,
-      redirect_uri: callbackUrl(),
-      code_verifier: saved.verifier,
-    }),
-  })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok)
-    throw new AuthError(data.error ?? "TokenError", "Google sign-in failed, try again")
-  saveTokens({
-    IdToken: data.id_token,
-    RefreshToken: data.refresh_token,
-    ExpiresIn: data.expires_in,
-  })
 }

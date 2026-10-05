@@ -1,7 +1,8 @@
 import { toast } from "sonner"
+import { useAuth } from "react-oidc-context"
 
 import { Button } from "@/components/ui/button"
-import { googleEnabled, startGoogleSignIn } from "@/lib/auth"
+import { googleEnabled } from "@/lib/auth"
 
 function GoogleIcon() {
   return (
@@ -28,9 +29,12 @@ function GoogleIcon() {
 
 /** Starts Google sign-in through Cognito; disabled until Google is set up in the user pool. */
 export function GoogleButton({ label }: { label: string }) {
+  const auth = useAuth()
   const enabled = googleEnabled()
   const start = () =>
-    startGoogleSignIn().catch(() => toast.error("Could not start Google sign-in, try again"))
+    auth
+      .signinRedirect({ extraQueryParams: { identity_provider: "Google" } })
+      .catch(() => toast.error("Could not start Google sign-in, try again"))
   return (
     <div>
       <Button
