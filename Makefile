@@ -33,6 +33,9 @@ BACKEND_FUNCTION  := $(PROJECT)-backend
 BACKEND_PARAMS    := infra/backend.params.env
 FRONTEND_STACK    := $(PROJECT)-frontend
 COGNITO_STACK     := $(PROJECT)-cognito
+REPORTS_STACK     := $(PROJECT)-reports
+REPORT_SENDER     ?= vlasyuk.pn@ucu.edu.ua
+REPORT_RECIPIENT  ?= vlasyuk.pn@ucu.edu.ua
 # Every resource gets this tag (in the templates and as a stack tag).
 STACK_TAGS        := PROJECT_NAME=$(PROJECT)
 
@@ -364,10 +367,74 @@ aws-cognito-destroy: aws-check ## Delete the Cognito stack — ALL user accounts
 	aws cloudformation delete-stack --stack-name $(COGNITO_STACK)
 	aws cloudformation wait stack-delete-complete --stack-name $(COGNITO_STACK)
 
+##@ AWS reports (weekly meetings report pipeline)
+
+.PHONY: aws-reports-deploy
+aws-reports-deploy: aws-check aws-backend-push ## Deploy weekly report pipeline: S3, SQS, Scheduler, Lambdas, SES
+	$(call clear_failed_stack,$(REPORTS_STACK))
+	@vpc_id=$$($(AWS_SHELL) cloudformation describe-stack-resources --stack-name $(BACKEND_STACK) --logical-resource-id Vpc --query 'StackResources[0].PhysicalResourceId' --output text); \
+	sub1=$$($(AWS_SHELL) cloudformation describe-stack-resources --stack-name $(BACKEND_STACK) --logical-resource-id PrivateSubnet1 --query 'StackResources[0].PhysicalResourceId' --output text); \
+	sub2=$$($(AWS_SHELL) cloudformation describe-stack-resources --stack-name $(BACKEND_STACK) --logical-resource-id PrivateSubnet2 --query 'StackResources[0].PhysicalResourceId' --output text); \
+	sg=$$($(AWS_SHELL) cloudformation describe-stack-resources --stack-name $(BACKEND_STACK) --logical-resource-id BackendSecurityGroup --query 'StackResources[0].PhysicalResourceId' --output text); \
+	secret=$$($(AWS_SHELL) cloudformation describe-stack-resources --stack-name $(BACKEND_STACK) --logical-resource-id DbSecret --query 'StackResources[0].PhysicalResourceId' --output text); \
+	db_host="$(call backend_output,DbEndpoint)"; \
+	rt=$$($(AWS_SHELL) ec2 describe-route-tables --filters "Name=vpc-id,Values=$$vpc_id" "Name=association.main,Values=true" --query 'RouteTables[0].RouteTableId' --output text); \
+	image_uri="$(ECR_URI):$(TAG)"; \
+	echo "Deploying $(REPORTS_STACK) with image $$image_uri and VPC $$vpc_id..."; \
+	$(AWS_SHELL) cloudformation deploy --stack-name $(REPORTS_STACK) --template-file infra/reports.yaml \
+	  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --tags $(STACK_TAGS) \
+	  --parameter-overrides ProjectName=$(PROJECT) "ImageUri=$$image_uri" \
+	    Architecture=$(LAMBDA_ARCH) "VpcId=$$vpc_id" "SubnetIds=$$sub1,$$sub2" \
+	    "SecurityGroupIds=$$sg" "RouteTableId=$$rt" "DbHost=$$db_host" \
+	    "DbSecretArn=$$secret" "SenderEmail=$(REPORT_SENDER)" "RecipientEmail=$(REPORT_RECIPIENT)"
+
+.PHONY: report-now
+report-now: aws-check ## Send an on-demand report request message to SQS (e.g. make report-now WEEK=2026-W39)
+	@queue_url=$$($(AWS_SHELL) cloudformation describe-stacks --stack-name $(REPORTS_STACK) \
+	  --query "Stacks[0].Outputs[?OutputKey=='ReportRequestsQueueUrl'].OutputValue" --output text 2>/dev/null); \
+	[ -n "$$queue_url" ] || { echo "Reports stack not found: run \`make aws-reports-deploy\` first"; exit 1; }; \
+	payload=$$(python3 -c "import json, os; print(json.dumps({'week': os.environ.get('WEEK') or None, 'source': 'make'}))" WEEK="$(WEEK)"); \
+	echo "Sending message to $$queue_url: $$payload"; \
+	$(AWS_SHELL) sqs send-message --queue-url "$$queue_url" --message-body "$$payload"
+
+.PHONY: aws-reports-status
+aws-reports-status: aws-check ## Show queue counts and reports stored in S3
+	@queue_url=$$($(AWS_SHELL) cloudformation describe-stacks --stack-name $(REPORTS_STACK) \
+	  --query "Stacks[0].Outputs[?OutputKey=='ReportRequestsQueueUrl'].OutputValue" --output text 2>/dev/null); \
+	dlq_url=$$($(AWS_SHELL) cloudformation describe-stacks --stack-name $(REPORTS_STACK) \
+	  --query "Stacks[0].Outputs[?OutputKey=='ReportRequestsDlqUrl'].OutputValue" --output text 2>/dev/null); \
+	bucket=$$($(AWS_SHELL) cloudformation describe-stacks --stack-name $(REPORTS_STACK) \
+	  --query "Stacks[0].Outputs[?OutputKey=='ReportsBucketName'].OutputValue" --output text 2>/dev/null); \
+	echo "=== Queue Attributes ==="; \
+	[ -z "$$queue_url" ] || $(AWS_SHELL) sqs get-queue-attributes --queue-url "$$queue_url" \
+	  --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible; \
+	echo "=== DLQ Attributes ==="; \
+	[ -z "$$dlq_url" ] || $(AWS_SHELL) sqs get-queue-attributes --queue-url "$$dlq_url" \
+	  --attribute-names ApproximateNumberOfMessages; \
+	echo "=== S3 Reports ==="; \
+	[ -z "$$bucket" ] || $(AWS_SHELL) s3 ls "s3://$$bucket/reports/" --recursive
+
+.PHONY: aws-reports-logs-builder
+aws-reports-logs-builder: ## Tail report-builder CloudWatch logs
+	$(AWS_SHELL) logs tail /aws/lambda/$(PROJECT)-report-builder --follow --since 30m
+
+.PHONY: aws-reports-logs-mailer
+aws-reports-logs-mailer: ## Tail report-mailer CloudWatch logs
+	$(AWS_SHELL) logs tail /aws/lambda/$(PROJECT)-report-mailer --follow --since 30m
+
+.PHONY: aws-reports-destroy
+aws-reports-destroy: aws-check ## Empty reports bucket and delete the reports stack
+	@read -p "Delete stack $(REPORTS_STACK) in $(AWS_REGION)? [y/N] " ok && [ "$$ok" = y ]
+	@bucket=$$($(AWS_SHELL) cloudformation describe-stacks --stack-name $(REPORTS_STACK) \
+	  --query "Stacks[0].Outputs[?OutputKey=='ReportsBucketName'].OutputValue" --output text 2>/dev/null); \
+	[ -z "$$bucket" ] || $(AWS_SHELL) s3 rm "s3://$$bucket" --recursive --quiet
+	$(AWS_SHELL) cloudformation delete-stack --stack-name $(REPORTS_STACK)
+	$(AWS_SHELL) cloudformation wait stack-delete-complete --stack-name $(REPORTS_STACK)
+
 ##@ AWS (all parts)
 
 .PHONY: aws-deploy
-aws-deploy: aws-cognito-deploy aws-backend-deploy aws-frontend-deploy ## Deploy everything: Cognito, backend, then the frontend built with their IDs and URL
+aws-deploy: aws-cognito-deploy aws-backend-deploy aws-frontend-deploy aws-reports-deploy ## Deploy everything: Cognito, backend, frontend, reports
 
 .PHONY: aws-destroy
 aws-destroy: aws-frontend-destroy aws-backend-destroy aws-cognito-destroy ## Delete everything on AWS (each stack asks first)

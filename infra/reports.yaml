@@ -1,0 +1,397 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Meetings App - weekly meetings report event-driven pipeline:
+  EventBridge Scheduler -> SQS -> report-builder Lambda (in VPC) -> S3 Gateway -> S3 bucket -> report-mailer Lambda -> SES.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: meetings
+    Description: Name prefix for all resources.
+
+  ImageUri:
+    Type: String
+    Description: Backend container image URI (reused for report-builder).
+
+  Architecture:
+    Type: String
+    Default: x86_64
+    AllowedValues: [arm64, x86_64]
+    Description: CPU architecture matching the backend container image.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where RDS and backend Lambda reside.
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnet IDs for the report-builder Lambda.
+
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Backend security group IDs allowing outbound access to RDS.
+
+  RouteTableId:
+    Type: String
+    Description: Route table ID where the S3 Gateway VPC Endpoint is attached.
+
+  DbHost:
+    Type: String
+    Description: RDS PostgreSQL endpoint address.
+
+  DbPort:
+    Type: Number
+    Default: 5432
+    Description: Database port.
+
+  DbName:
+    Type: String
+    Default: meetings
+    Description: Database name.
+
+  DbUser:
+    Type: String
+    Default: meetings
+    Description: Database user.
+
+  DbSecretArn:
+    Type: String
+    Description: Secrets Manager ARN for database credentials.
+
+  SenderEmail:
+    Type: String
+    Default: vlasyuk.pn@ucu.edu.ua
+    Description: "Verified SES email address used as From: in reports."
+
+  RecipientEmail:
+    Type: String
+    Default: vlasyuk.pn@ucu.edu.ua
+    Description: "Verified SES email address used as To: for reports."
+
+  ScheduleExpression:
+    Type: String
+    Default: "cron(0 7 ? * MON *)"
+    Description: Cron schedule expression for the weekly report.
+
+  ScheduleTimezone:
+    Type: String
+    Default: Europe/Kyiv
+    Description: Timezone for the EventBridge schedule.
+
+Resources:
+  # =====================================================================
+  # S3 Gateway VPC Endpoint: allows in-VPC Lambda to reach S3 at zero cost
+  # =====================================================================
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds: [!Ref RouteTableId]
+
+  # =====================================================================
+  # SQS Queues: buffer requests, handle retries, and provide dead-letter queue
+  # =====================================================================
+  ReportRequestsDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-report-requests-dlq"
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  ReportRequestsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-report-requests"
+      # VisibilityTimeout at least 6x builder timeout (60s * 6 = 360s)
+      VisibilityTimeout: 360
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ReportRequestsDlq.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  # =====================================================================
+  # Lambda 1: report-builder (inside VPC, reaches RDS and S3 via Gateway)
+  # =====================================================================
+  BuilderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+      Policies:
+        - PolicyName: S3AndSqsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub "arn:aws:s3:::${ProjectName}-reports-${AWS::AccountId}/reports/*"
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt ReportRequestsQueue.Arn
+
+  BuilderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+      FunctionName: !Sub "${ProjectName}-report-builder"
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      ImageConfig:
+        Command: ["app.reports.lambda_handler.handler"]
+      Architectures: [!Ref Architecture]
+      MemorySize: 512
+      Timeout: 60
+      Role: !GetAtt BuilderRole.Arn
+      VpcConfig:
+        SubnetIds: !Ref SubnetIds
+        SecurityGroupIds: !Ref SecurityGroupIds
+      Environment:
+        Variables:
+          DB_HOST: !Ref DbHost
+          DB_PORT: !Ref DbPort
+          DB_NAME: !Ref DbName
+          DB_USER: !Ref DbUser
+          DB_PASSWORD: !Sub "{{resolve:secretsmanager:${DbSecretArn}:SecretString:password}}"
+          DB_NULL_POOL: "true"
+          REPORTS_BUCKET: !Sub "${ProjectName}-reports-${AWS::AccountId}"
+
+  BuilderEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ReportRequestsQueue.Arn
+      FunctionName: !Ref BuilderFunction
+      BatchSize: 1
+      Enabled: true
+
+  # =====================================================================
+  # EventBridge Scheduler: sends weekly command to SQS queue
+  # =====================================================================
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SqsSendMessage
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt ReportRequestsQueue.Arn
+
+  WeeklySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${ProjectName}-weekly-report"
+      ScheduleExpression: !Ref ScheduleExpression
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt ReportRequestsQueue.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: '{"week": null, "source": "schedule"}'
+
+  # =====================================================================
+  # Lambda 2: report-mailer (outside VPC, reads S3 and sends via SES)
+  # =====================================================================
+  MailerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: S3AndSesAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${ProjectName}-reports-${AWS::AccountId}/reports/*"
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
+
+  MailerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+      FunctionName: !Sub "${ProjectName}-report-mailer"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt MailerRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          REPORT_SENDER: !Ref SenderEmail
+          REPORT_RECIPIENT: !Ref RecipientEmail
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import urllib.parse
+          from email.message import EmailMessage
+          import boto3
+
+          s3 = boto3.client("s3")
+          ses = boto3.client("ses")
+
+          def handler(event, context):
+              print("report-mailer triggered: trigger=s3")
+              records = event.get("Records", [])
+              for record in records:
+                  bucket = record["s3"]["bucket"]["name"]
+                  raw_key = record["s3"]["object"]["key"]
+                  key = urllib.parse.unquote_plus(raw_key)
+                  print(f"report-mailer processing s3 object: trigger=s3 bucket={bucket} key={key}")
+
+                  resp = s3.get_object(Bucket=bucket, Key=key)
+                  csv_content = resp["Body"].read()
+
+                  filename = key.split("/")[-1]
+                  week_name = filename.replace(".csv", "")
+
+                  sender = os.environ.get("REPORT_SENDER")
+                  recipient = os.environ.get("REPORT_RECIPIENT")
+
+                  msg = EmailMessage()
+                  msg["Subject"] = f"Weekly Meetings Report - {week_name}"
+                  msg["From"] = sender
+                  msg["To"] = recipient
+                  msg.set_content(
+                      f"Hello,\n\nPlease find attached the weekly meetings report for {week_name}.\n\n"
+                      f"Generated automatically by the Meetings App report pipeline."
+                  )
+                  msg.add_attachment(
+                      csv_content,
+                      maintype="text",
+                      subtype="csv",
+                      filename=filename,
+                  )
+
+                  print(f"Sending email from {sender} to {recipient} for {key} via SES")
+                  ses.send_raw_email(
+                      Source=sender,
+                      Destinations=[r.strip() for r in recipient.split(",") if r.strip()],
+                      RawMessage={"Data": msg.as_bytes()},
+                  )
+                  print(f"Email sent successfully for {key}")
+              return {"status": "ok"}
+
+  MailerLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref MailerFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::${ProjectName}-reports-${AWS::AccountId}"
+      SourceAccount: !Ref AWS::AccountId
+
+  # =====================================================================
+  # S3 Bucket for reports (explicit name + lifecycle + event notification)
+  # =====================================================================
+  ReportsBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: MailerLambdaPermission
+    Properties:
+      BucketName: !Sub "${ProjectName}-reports-${AWS::AccountId}"
+      Tags:
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteAfter90Days
+            Status: Enabled
+            ExpirationInDays: 90
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt MailerFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: reports/
+                  - Name: suffix
+                    Value: .csv
+
+  # =====================================================================
+  # SES Email Identity for sandbox verification
+  # =====================================================================
+  SesIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref RecipientEmail
+
+Outputs:
+  ReportsBucketName:
+    Description: S3 Bucket storing weekly CSV reports
+    Value: !Ref ReportsBucket
+
+  ReportRequestsQueueUrl:
+    Description: SQS Queue URL for report requests
+    Value: !Ref ReportRequestsQueue
+
+  ReportRequestsQueueArn:
+    Description: SQS Queue ARN
+    Value: !GetAtt ReportRequestsQueue.Arn
+
+  ReportRequestsDlqUrl:
+    Description: SQS Dead-Letter Queue URL
+    Value: !Ref ReportRequestsDlq
+
+  BuilderFunctionName:
+    Description: Lambda Function Name for Report Builder
+    Value: !Ref BuilderFunction
+
+  MailerFunctionName:
+    Description: Lambda Function Name for Report Mailer
+    Value: !Ref MailerFunction
+
+  ScheduleName:
+    Description: EventBridge Schedule Name
+    Value: !Ref WeeklySchedule
