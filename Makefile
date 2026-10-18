@@ -34,6 +34,8 @@ BACKEND_PARAMS    := infra/backend.params.env
 FRONTEND_STACK    := $(PROJECT)-frontend
 COGNITO_STACK     := $(PROJECT)-cognito
 REPORTS_STACK     := $(PROJECT)-reports
+AI_STACK          := $(PROJECT)-ai
+PARSER_MODEL      ?= us.anthropic.claude-haiku-4-5-20251001-v1:0
 REPORT_SENDER     ?= vlasyuk.pn@ucu.edu.ua
 REPORT_RECIPIENT  ?= vlasyuk.pn@ucu.edu.ua
 # Every resource gets this tag (in the templates and as a stack tag).
@@ -262,11 +264,12 @@ aws-frontend-stack: ## Create/update the frontend stack (S3, CloudFront, custom 
 .PHONY: aws-frontend-publish
 aws-frontend-publish: ## Build the SPA with VITE_API_URL=<function URL>, upload it, invalidate CloudFront
 	@api="$(API_URL)"; bucket="$(call frontend_output,BucketName)"; dist="$(call frontend_output,DistributionId)"; \
+	parser_url="$(call stack_output,$(AI_STACK),ParserUrl)"; \
 	[ -n "$$api" ] || { echo "Backend not deployed: run \`make aws-backend-deploy\` first"; exit 1; }; \
 	[ -n "$$bucket" ] || { echo "Frontend stack not found: run \`make aws-frontend-stack\` first"; exit 1; }; \
 	[ -n "$(COGNITO_POOL_ID)" ] || { echo "Cognito not deployed: run \`make aws-cognito-deploy\` first"; exit 1; }; \
-	echo "Building frontend with VITE_API_URL=$$api" && \
-	(cd front && npm ci --no-audit --no-fund && VITE_API_URL="$$api" \
+	echo "Building frontend with VITE_API_URL=$$api VITE_PARSER_URL=$$parser_url" && \
+	(cd front && npm ci --no-audit --no-fund && VITE_API_URL="$$api" VITE_PARSER_URL="$$parser_url" \
 	  VITE_COGNITO_REGION=$(AWS_REGION) VITE_COGNITO_USER_POOL_ID=$(COGNITO_POOL_ID) \
 	  VITE_COGNITO_CLIENT_ID=$(COGNITO_CLIENT) VITE_COGNITO_DOMAIN=$(call cognito_output,HostedUiDomain) \
 	  VITE_COGNITO_GOOGLE=$(call cognito_output,GoogleEnabled) npm run build) && \
@@ -431,13 +434,60 @@ aws-reports-destroy: aws-check ## Empty reports bucket and delete the reports st
 	$(AWS_SHELL) cloudformation delete-stack --stack-name $(REPORTS_STACK)
 	$(AWS_SHELL) cloudformation wait stack-delete-complete --stack-name $(REPORTS_STACK)
 
+##@ AI (agenda parser)
+
+.PHONY: llm-hello
+llm-hello: ## Make a test call to Claude on Amazon Bedrock
+	@$(AWS_SHELL) bedrock-runtime converse --model-id $(PARSER_MODEL) \
+	  --messages '[{"role":"user","content":[{"text":"In one sentence: what is an ISO week?"}]}]' \
+	  --inference-config '{"maxTokens":200}' --output json
+
+.PHONY: parse
+parse: ## Parse an agenda locally from TEXT="..."
+	@test -n "$(TEXT)" || { echo "Usage: make parse TEXT=\"...\""; exit 1; }
+	@cd back && TEXT="$(TEXT)" uv run python -c '\
+import json, sys, os;\
+from datetime import date;\
+from app.ai.agenda import parse_agenda, cost_usd;\
+from app.config import settings;\
+text = os.environ.get("TEXT", "");\
+agenda, usage = parse_agenda(text, date.today(), "Europe/Kyiv");\
+print(json.dumps(agenda.model_dump(mode="json"), indent=2, ensure_ascii=False));\
+cost = cost_usd(settings.PARSER_MODEL, usage);\
+print(f"\nTokens: {usage} | Cost: $${cost:.6f} | Model: {settings.PARSER_MODEL}");'
+
+.PHONY: aws-ai-deploy
+aws-ai-deploy: aws-check aws-backend-push ## Deploy agenda parser Lambda and Function URL
+	$(call clear_failed_stack,$(AI_STACK))
+	@image_uri="$(ECR_URI):$(TAG)"; \
+	pool_id="$(COGNITO_POOL_ID)"; \
+	client_id="$(or $(COGNITO_CLIENT),$(COGNITO_CLIENT_ID))"; \
+	cors="$(CORS_ORIGINS_AWS)"; \
+	echo "Deploying $(AI_STACK) with image $$image_uri and model $(PARSER_MODEL)..."; \
+	$(AWS_SHELL) cloudformation deploy --stack-name $(AI_STACK) --template-file infra/ai.yaml \
+	  --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset --tags $(STACK_TAGS) \
+	  --parameter-overrides ProjectName=$(PROJECT) "ImageUri=$$image_uri" \
+	    Architecture=$(LAMBDA_ARCH) "ParserModel=$(PARSER_MODEL)" \
+	    "CorsOrigins=$$cors" "CognitoUserPoolId=$$pool_id" "CognitoClientId=$$client_id"; \
+	echo "Parser URL: $(call stack_output,$(AI_STACK),ParserUrl)"
+
+.PHONY: aws-ai-logs
+aws-ai-logs: ## Tail agenda-parser CloudWatch logs
+	$(AWS_SHELL) logs tail /aws/lambda/$(PROJECT)-agenda-parser --follow --since 30m
+
+.PHONY: aws-ai-destroy
+aws-ai-destroy: aws-check ## Delete the AI agenda parser stack
+	@read -p "Delete stack $(AI_STACK) in $(AWS_REGION)? [y/N] " ok && [ "$$ok" = y ]
+	$(AWS_SHELL) cloudformation delete-stack --stack-name $(AI_STACK)
+	$(AWS_SHELL) cloudformation wait stack-delete-complete --stack-name $(AI_STACK)
+
 ##@ AWS (all parts)
 
 .PHONY: aws-deploy
-aws-deploy: aws-cognito-deploy aws-backend-deploy aws-frontend-deploy aws-reports-deploy ## Deploy everything: Cognito, backend, frontend, reports
+aws-deploy: aws-cognito-deploy aws-backend-deploy aws-ai-deploy aws-frontend-deploy aws-reports-deploy ## Deploy everything: Cognito, backend, AI, frontend, reports
 
 .PHONY: aws-destroy
-aws-destroy: aws-frontend-destroy aws-backend-destroy aws-cognito-destroy ## Delete everything on AWS (each stack asks first)
+aws-destroy: aws-frontend-destroy aws-reports-destroy aws-ai-destroy aws-backend-destroy aws-cognito-destroy ## Delete everything on AWS (each stack asks first)
 
 ##@ Help
 

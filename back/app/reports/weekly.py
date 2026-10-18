@@ -95,10 +95,7 @@ def _generate_report(
     curr_meetings = list(db.scalars(curr_query).all())
 
     # 2. Query meetings for prior week
-    prior_query = (
-        select(Meeting)
-        .where(Meeting.starts_at >= prior_start, Meeting.starts_at <= prior_end)
-    )
+    prior_query = select(Meeting).where(Meeting.starts_at >= prior_start, Meeting.starts_at <= prior_end)
     prior_meetings = list(db.scalars(prior_query).all())
 
     curr_count = len(curr_meetings)
@@ -165,13 +162,15 @@ def _generate_report(
     writer.writerow(["Rank", "Title", "Start Time (UTC)", "Duration (hours)", "Participants Count"])
     if longest_meetings:
         for idx, m in enumerate(longest_meetings, start=1):
-            writer.writerow([
-                idx,
-                m.title,
-                m.starts_at.strftime("%Y-%m-%d %H:%M:%S") if m.starts_at else "N/A",
-                f"{_duration_hours(m):.2f}",
-                len(m.participants),
-            ])
+            writer.writerow(
+                [
+                    idx,
+                    m.title,
+                    m.starts_at.strftime("%Y-%m-%d %H:%M:%S") if m.starts_at else "N/A",
+                    f"{_duration_hours(m):.2f}",
+                    len(m.participants),
+                ]
+            )
     else:
         writer.writerow(["No meetings recorded this week", "", "", "", ""])
     writer.writerow([])
@@ -181,12 +180,14 @@ def _generate_report(
     writer.writerow(["Organizer Name", "Email", "Meeting Count", "Total Duration (hours)"])
     if user_stats:
         for stats in sorted(user_stats.values(), key=lambda s: s["count"], reverse=True):
-            writer.writerow([
-                stats["name"],
-                stats["email"],
-                stats["count"],
-                f"{float(stats['duration']):.2f}",
-            ])
+            writer.writerow(
+                [
+                    stats["name"],
+                    stats["email"],
+                    stats["count"],
+                    f"{float(stats['duration']):.2f}",
+                ]
+            )
     else:
         writer.writerow(["No organizer activity", "", "", ""])
 

@@ -1,7 +1,10 @@
 import { cognitoLogoutUrl, getIdToken, hostedLoginEnabled, signOut } from "@/lib/auth"
 import type {
+  AgendaCreate,
+  AgendaRead,
   Meeting,
   MeetingCreate,
+  ParsedAgenda,
   Participant,
   ParticipantCreate,
   User,
@@ -79,4 +82,55 @@ export const api = {
     request<Participant[]>(`/participants${q ? `?q=${encodeURIComponent(q)}` : ""}`),
   createParticipant: (data: ParticipantCreate) =>
     request<Participant>("/participants", { method: "POST", body: JSON.stringify(data) }),
+
+  getAgenda: (meetingId: string) => request<AgendaRead>(`/meetings/${meetingId}/agenda`),
+  saveAgenda: (meetingId: string, data: AgendaCreate) =>
+    request<AgendaRead>(`/meetings/${meetingId}/agenda`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+}
+
+const PARSER_URL = (import.meta.env.VITE_PARSER_URL ?? "").replace(/\/+$/, "")
+
+export async function parseAgendaText(
+  text: string,
+  today: string,
+  tz: string,
+  signal?: AbortSignal,
+): Promise<{ agenda: ParsedAgenda; model: string; prompt_version: string }> {
+  const token = await getIdToken()
+  const targetUrl = PARSER_URL ? PARSER_URL : `${API_URL}/api/ai/parse-agenda`
+  const response = await fetch(targetUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ text, today, tz }),
+    signal,
+  })
+
+  if (!response.ok) {
+    let errMessage = `Error ${response.status}`
+    try {
+      const data = await response.json()
+      if (data.error) errMessage = data.error
+      else if (data.detail) errMessage = data.detail
+    } catch {
+      // ignore non-json
+    }
+    if (response.status === 413) {
+      throw new Error("Text exceeds maximum length of 10,000 characters")
+    }
+    if (response.status === 422) {
+      throw new Error(`The model could not find an agenda: ${errMessage}`)
+    }
+    if (response.status === 429) {
+      throw new Error("The AI service is busy. Please wait a moment or enter the agenda manually.")
+    }
+    throw new Error(errMessage)
+  }
+
+  return response.json()
 }

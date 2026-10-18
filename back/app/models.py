@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String, Table, Text, Uuid, func, text
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, String, Table, Text, Uuid, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -60,6 +61,12 @@ class Meeting(Base):
         order_by="Participant.name",
         passive_deletes=True,
     )
+    agenda: Mapped["Agenda | None"] = relationship(
+        back_populates="meeting",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
 
 class Participant(Base):
@@ -77,3 +84,23 @@ class Participant(Base):
         back_populates="participants",
         passive_deletes=True,
     )
+
+
+class Agenda(Base):
+    __tablename__ = "agendas"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid.uuid4, server_default=text("gen_random_uuid()")
+    )
+    meeting_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("meetings.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    items: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    action_items: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    ai_suggestion: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    meeting: Mapped[Meeting] = relationship(back_populates="agenda")

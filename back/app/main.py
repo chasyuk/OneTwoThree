@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.routers import health, me, meetings, participants
+from app.routers import ai, health, me, meetings, participants
 from app.services.errors import ConflictError, NotFoundError
 
 if not settings.auth_enabled:
@@ -43,3 +43,4 @@ app.include_router(health.router, prefix="/api")
 app.include_router(me.router, prefix="/api")
 app.include_router(meetings.router, prefix="/api")
 app.include_router(participants.router, prefix="/api")
+app.include_router(ai.router, prefix="/api")

@@ -61,7 +61,7 @@ export function SiteHeader({ onNewMeeting }: SiteHeaderProps) {
               className="max-w-36 truncate text-xs text-white/90 sm:max-w-48 sm:text-sm"
               title={me.email}
             >
-              {me.email}
+              {me.name ?? me.email}
             </span>
           )}
           <button

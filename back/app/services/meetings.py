@@ -4,8 +4,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Meeting, Participant, User
-from app.schemas import MeetingCreate
+from app.models import Agenda, Meeting, Participant, User
+from app.schemas import AgendaCreate, MeetingCreate
 from app.services.errors import NotFoundError
 
 # Meetings are personal: every query is scoped to the owner's user ID.
@@ -74,3 +74,33 @@ def update_meeting(db: Session, meeting_id: UUID, data: MeetingCreate, user: Use
 def delete_meeting(db: Session, meeting_id: UUID, user: User) -> None:
     db.delete(get_meeting(db, meeting_id, user))
     db.commit()
+
+
+def get_agenda(db: Session, meeting_id: UUID, user: User) -> Agenda | None:
+    meeting = get_meeting(db, meeting_id, user)
+    query = select(Agenda).where(Agenda.meeting_id == meeting.id)
+    return db.scalar(query)
+
+
+def save_agenda(db: Session, meeting_id: UUID, data: AgendaCreate, user: User) -> Agenda:
+    meeting = get_meeting(db, meeting_id, user)
+    query = select(Agenda).where(Agenda.meeting_id == meeting.id)
+    agenda = db.scalar(query)
+    items_data = [item.model_dump(mode="json") for item in data.items]
+    actions_data = [item.model_dump(mode="json") for item in data.action_items]
+    if agenda is None:
+        agenda = Agenda(
+            meeting_id=meeting.id,
+            items=items_data,
+            action_items=actions_data,
+            ai_suggestion=data.ai_suggestion,
+        )
+        db.add(agenda)
+    else:
+        agenda.items = items_data
+        agenda.action_items = actions_data
+        if data.ai_suggestion is not None:
+            agenda.ai_suggestion = data.ai_suggestion
+    db.commit()
+    db.refresh(agenda)
+    return agenda

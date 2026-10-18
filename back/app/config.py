@@ -25,8 +25,13 @@ class Settings(BaseSettings):
     cognito_user_pool_id: str = ""
     cognito_client_id: str = ""
     # The pool's JWKS as JSON. Set on AWS, where the Lambda has no internet route to fetch it;
-    # when empty it is downloaded from the issuer on first use.
     cognito_jwks: str = ""
+
+    parser_model: str = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+    @property
+    def PARSER_MODEL(self) -> str:
+        return self.parser_model
 
     @property
     def sqlalchemy_url(self) -> URL:

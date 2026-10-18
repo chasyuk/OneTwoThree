@@ -113,6 +113,7 @@ describe("with Cognito configured", () => {
 
   it("rejects an OAuth callback it did not start", async () => {
     mockFetch(() => ({ body: {} }))
+    window.history.pushState({}, "", "/auth/callback?code=abc&state=forged")
     renderWithQuery(<App />, "/auth/callback?code=abc&state=forged")
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Sign-in failed"))
   })

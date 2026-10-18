@@ -6,6 +6,7 @@ import {
   ExternalLink,
   MapPin,
   Pencil,
+  Sparkles,
   Trash2,
   Users,
 } from "lucide-react"
@@ -58,9 +59,15 @@ function useNow(): Date {
 interface MeetingActions {
   onEdit: (meeting: Meeting) => void
   onDelete: (meeting: Meeting) => void
+  onAgenda?: (meeting: Meeting) => void
 }
 
-function MeetingDetails({ meeting, onEdit, onDelete }: { meeting: Meeting } & MeetingActions) {
+function MeetingDetails({
+  meeting,
+  onEdit,
+  onDelete,
+  onAgenda,
+}: { meeting: Meeting } & MeetingActions) {
   const start = new Date(meeting.starts_at)
   return (
     <div className="space-y-3 text-sm">
@@ -117,17 +124,35 @@ function MeetingDetails({ meeting, onEdit, onDelete }: { meeting: Meeting } & Me
           </div>
         </div>
       )}
+      {onAgenda && (
+        <div className="border-t pt-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full gap-1.5 text-xs hover:border-amber-300 hover:bg-amber-50 hover:text-amber-800"
+            onClick={() => onAgenda(meeting)}
+          >
+            <Sparkles className="size-3.5 text-amber-600" />
+            Agenda & Action Items
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
 
-function MeetingBlock({ segment, onEdit, onDelete }: { segment: DaySegment } & MeetingActions) {
+function MeetingBlock({
+  segment,
+  onEdit,
+  onDelete,
+  onAgenda,
+}: { segment: DaySegment } & MeetingActions) {
   const [open, setOpen] = useState(false)
   const { meeting, startMin, endMin, column, columns } = segment
   // Close the details before handing over to the edit or delete dialog.
-  const closeThen = (action: (meeting: Meeting) => void) => (m: Meeting) => {
+  const closeThen = (action?: (meeting: Meeting) => void) => (m: Meeting) => {
     setOpen(false)
-    action(m)
+    action?.(m)
   }
   const height = Math.max(((endMin - startMin) / 60) * HOUR_HEIGHT - 2, MIN_EVENT_HEIGHT)
   const compact = height < 40
@@ -160,6 +185,7 @@ function MeetingBlock({ segment, onEdit, onDelete }: { segment: DaySegment } & M
           meeting={meeting}
           onEdit={closeThen(onEdit)}
           onDelete={closeThen(onDelete)}
+          onAgenda={closeThen(onAgenda)}
         />
       </PopoverContent>
     </Popover>
@@ -176,6 +202,7 @@ export function MeetingsCalendar({
   meetings,
   onEdit,
   onDelete,
+  onAgenda,
   onCreateAt,
 }: MeetingsCalendarProps) {
   const [view, setView] = useState<CalendarView>(initialView)
@@ -320,6 +347,7 @@ export function MeetingsCalendar({
                       segment={segment}
                       onEdit={onEdit}
                       onDelete={onDelete}
+                      onAgenda={onAgenda}
                     />
                   ))}
 

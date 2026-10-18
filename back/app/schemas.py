@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import (
@@ -100,3 +101,37 @@ class MeetingRead(BaseModel):
     owner_id: UUID | None
     participants: list[ParticipantRead]
     created_at: datetime
+
+
+class AgendaItemSchema(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    topic: str = Field(min_length=1)
+    owner: str | None = None
+    minutes: int | None = Field(default=None, ge=1, le=480)
+
+
+class ActionItemSchema(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    task: str = Field(min_length=1)
+    owner: str | None = None
+    due: date | None = None
+
+
+class AgendaCreate(BaseModel):
+    items: list[AgendaItemSchema] = []
+    action_items: list[ActionItemSchema] = []
+    ai_suggestion: dict[str, Any] | None = None
+
+
+class AgendaRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    meeting_id: UUID
+    items: list[dict[str, Any]]
+    action_items: list[dict[str, Any]]
+    ai_suggestion: dict[str, Any] | None
+    created_at: datetime
+    updated_at: datetime

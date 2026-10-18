@@ -37,4 +37,4 @@ def client() -> Iterator[TestClient]:
     app.dependency_overrides.clear()
 
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE meeting_participants, meetings, participants, users"))
+        conn.execute(text("TRUNCATE meeting_participants, agendas, meetings, participants, users CASCADE"))

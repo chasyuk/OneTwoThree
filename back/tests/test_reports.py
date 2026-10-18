@@ -83,7 +83,7 @@ def test_build_weekly_report_with_meetings():
 
     # Cleanup
     with engine.begin() as conn:
-        conn.execute(text("TRUNCATE meeting_participants, meetings, participants, users"))
+        conn.execute(text("TRUNCATE meeting_participants, agendas, meetings, participants, users CASCADE"))
 
 
 def test_lambda_handler_helpers():
