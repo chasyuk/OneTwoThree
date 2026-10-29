@@ -11,11 +11,8 @@ from app.config import settings
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
-CORS_HEADERS = {
+RESPONSE_HEADERS = {
     "content-type": "application/json",
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "Authorization,Content-Type",
-    "access-control-allow-methods": "POST,OPTIONS",
 }
 
 
@@ -27,7 +24,7 @@ def handler(event, context):
     if http_method == "OPTIONS":
         return {
             "statusCode": 204,
-            "headers": CORS_HEADERS,
+            "headers": RESPONSE_HEADERS,
             "body": "",
         }
 
@@ -50,7 +47,7 @@ def handler(event, context):
         log.warning("Authentication failed in agenda_lambda: %s", e)
         return {
             "statusCode": 401,
-            "headers": CORS_HEADERS,
+            "headers": RESPONSE_HEADERS,
             "body": json.dumps({"error": f"Unauthorized: {e}"}),
         }
 
@@ -63,7 +60,7 @@ def handler(event, context):
     except Exception:
         return {
             "statusCode": 400,
-            "headers": CORS_HEADERS,
+            "headers": RESPONSE_HEADERS,
             "body": json.dumps({"error": "Invalid JSON body"}),
         }
 
@@ -71,7 +68,7 @@ def handler(event, context):
     if len(text) > 10000:
         return {
             "statusCode": 413,
-            "headers": CORS_HEADERS,
+            "headers": RESPONSE_HEADERS,
             "body": json.dumps({"error": "Text exceeds maximum length of 10,000 characters"}),
         }
 
@@ -88,14 +85,14 @@ def handler(event, context):
     except AgendaParseError as e:
         return {
             "statusCode": 422,
-            "headers": CORS_HEADERS,
+            "headers": RESPONSE_HEADERS,
             "body": json.dumps({"error": str(e)}),
         }
     except Exception as e:
         log.exception("Error parsing agenda")
         return {
             "statusCode": 500,
-            "headers": CORS_HEADERS,
+            "headers": RESPONSE_HEADERS,
             "body": json.dumps({"error": f"Parsing failed: {e}"}),
         }
 
@@ -114,7 +111,7 @@ def handler(event, context):
 
     return {
         "statusCode": 200,
-        "headers": CORS_HEADERS,
+        "headers": RESPONSE_HEADERS,
         "body": json.dumps(
             {
                 "agenda": agenda.model_dump(mode="json"),
