@@ -100,7 +100,13 @@ export async function parseAgendaText(
   signal?: AbortSignal,
 ): Promise<{ agenda: ParsedAgenda; model: string; prompt_version: string }> {
   const token = await getIdToken()
-  const targetUrl = PARSER_URL ? PARSER_URL : `${API_URL}/api/ai/parse-agenda`
+  if (!token && hostedLoginEnabled()) {
+    signOut()
+    window.location.assign(cognitoLogoutUrl())
+    throw new Error("Your session has expired. Redirecting to sign in...")
+  }
+
+  const targetUrl = PARSER_URL ? `${PARSER_URL}/` : `${API_URL}/api/ai/parse-agenda`
   const response = await fetch(targetUrl, {
     method: "POST",
     headers: {
@@ -110,6 +116,12 @@ export async function parseAgendaText(
     body: JSON.stringify({ text, today, tz }),
     signal,
   })
+
+  if (response.status === 401) {
+    signOut()
+    window.location.assign(hostedLoginEnabled() ? cognitoLogoutUrl() : "/")
+    throw new Error("Your session has expired. Redirecting to sign in...")
+  }
 
   if (!response.ok) {
     let errMessage = `Error ${response.status}`
