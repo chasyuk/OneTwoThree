@@ -91,7 +91,10 @@ export const api = {
     }),
 }
 
-const PARSER_URL = (import.meta.env.VITE_PARSER_URL ?? "").replace(/\/+$/, "")
+const PARSER_URL = (
+  import.meta.env.VITE_PARSER_URL ||
+  "https://sj6stkwx3zputn5ld24e42ik440suwfi.lambda-url.us-east-1.on.aws"
+).replace(/\/+$/, "")
 
 export async function parseAgendaText(
   text: string,

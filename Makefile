@@ -187,6 +187,11 @@ aws-app-deploy: aws-check aws-backend-push ## Release app code only: update Lamb
 	aws lambda update-function-code --function-name $(BACKEND_FUNCTION) --image-uri $(ECR_URI):$(TAG) \
 	  --query LastUpdateStatus --output text
 	aws lambda wait function-updated-v2 --function-name $(BACKEND_FUNCTION)
+	@if aws lambda get-function --function-name $(PROJECT)-agenda-parser >/dev/null 2>&1; then \
+	  aws lambda update-function-code --function-name $(PROJECT)-agenda-parser --image-uri $(ECR_URI):$(TAG) \
+	    --query LastUpdateStatus --output text; \
+	  aws lambda wait function-updated-v2 --function-name $(PROJECT)-agenda-parser; \
+	fi
 	$(MAKE) --no-print-directory aws-backend-migrate
 	$(MAKE) --no-print-directory aws-frontend-publish
 	$(MAKE) --no-print-directory aws-backend-health
