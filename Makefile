@@ -68,7 +68,7 @@ frontend_output = $(call stack_output,$(FRONTEND_STACK),$(1))
 cognito_output  = $(call stack_output,$(COGNITO_STACK),$(1))
 API_URL          = $(call backend_output,ApiUrl)
 FRONTEND_ORIGINS = $(call frontend_output,SiteOrigins)
-CORS_ORIGINS_AWS = $(CORS_LOCAL)$(if $(FRONTEND_ORIGINS),$(COMMA)$(FRONTEND_ORIGINS))
+CORS_ORIGINS_AWS = $(CORS_LOCAL)$(if $(FRONTEND_ORIGINS),$(COMMA)$(FRONTEND_ORIGINS))$(if $(FRONTEND_DOMAIN),$(COMMA)https://$(FRONTEND_DOMAIN))
 # Cognito may redirect back (Google sign-in) to every origin the API allows.
 COGNITO_CALLBACK_URLS = $(subst $(COMMA),/auth/callback$(COMMA),$(CORS_ORIGINS_AWS))/auth/callback
 COGNITO_LOGOUT_URLS   = $(subst $(COMMA),/$(COMMA),$(CORS_ORIGINS_AWS))/
