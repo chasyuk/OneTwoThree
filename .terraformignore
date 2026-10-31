@@ -1,0 +1,10 @@
+.git/
+.venv/
+node_modules/
+front/node_modules/
+back/.venv/
+back/.ruff_cache/
+back/__pycache__/
+dist/
+front/dist/
+*.pyc

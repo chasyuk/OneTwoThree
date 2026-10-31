@@ -49,7 +49,7 @@ front/            # Vite + React + TypeScript + Tailwind + shadcn/ui
     lib/auth.ts   # Cognito session and ID-token refresh; OIDC redirect is managed by react-oidc-context
     lib/api.ts    # typed fetch wrapper (VITE_API_URL = backend origin, empty = same origin)
   nginx.conf      # serves the SPA, proxies /api to backend
-infra/            # CloudFormation: cognito, backend-ecr, backend (Lambda + RDS PostgreSQL), frontend (S3 + CloudFront)
+infra/            # Terraform: auth (Cognito), reports (S3, SQS, Lambdas, SES), ai (agenda parser); CloudFormation: backend, frontend, ECR
 ```
 
 ## API
@@ -84,8 +84,9 @@ and expiry against the pool's public keys and stores the user in the `users` tab
 token's `sub`).
 
 ```bash
-make aws-cognito-deploy   # user pool + app client + Hosted UI domain; prints the lines for .env
-make aws-cognito-env      # print them again
+make infra-plan           # run speculative plan in HCP Terraform
+make aws-cognito-env      # print COGNITO_* lines for .env from Terraform outputs
+make aws-cognito-outputs  # view Cognito outputs
 ```
 
 Paste the printed `COGNITO_*` lines into `.env` and run `make up`. The local backend and frontend
@@ -96,11 +97,27 @@ every request acts as one local user (`dev@localhost`).
 Cloud, then create a Web application client. Set its JavaScript origin to
 `https://<COGNITO_DOMAIN>` and its redirect URI to
 `https://<COGNITO_DOMAIN>/oauth2/idpresponse`. Put the resulting client ID and secret in the
-ignored `.env` file as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; never commit the secret. Run
-`make aws-cognito-deploy` to add Google to the user pool, then `make aws-frontend-publish` to publish
-the updated app. Cognito sends the OAuth secret to CloudFormation through the template's `NoEcho`
-parameter. Google must show the consent screen as **In production** so the lecturer can use their
-own account.
+ignored `.env` file as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; never commit the secret.
+The secret is supplied to HCP Terraform as a sensitive workspace variable. Run
+`make aws-frontend-publish` to publish the updated app. Google must show the consent screen as
+**In production** so the lecturer can use their own account.
+
+## Infrastructure (Terraform & HCP Terraform)
+
+The project's authentication (Cognito), weekly reports pipeline, and AI agenda parser infrastructure are managed as code using **Terraform** connected to **HCP Terraform**:
+
+- **Workspace:** `meetings-dev` in organization `ooad-chasyuk`
+- **Execution:** Remote execution in HCP Terraform, authenticated via AWS IAM OIDC (`arn:aws:iam::561721572034:role/hcp-terraform-ooad-chasyuk`). No long-lived AWS keys are stored in HCP Terraform.
+- **VCS Integration:** Connected to GitHub (`chasyuk/OneTwoThree`). Pull requests generate speculative plans; pushes and merges to `main` trigger plans and applies.
+- **Secrets Management:** `google_client_secret` is stored as a sensitive variable in the HCP Terraform workspace. Database credentials are dynamically looked up from AWS Secrets Manager.
+
+### Infrastructure Targets
+
+```bash
+make infra-plan       # Run terraform plan remotely in HCP Terraform
+make infra-apply      # Run terraform apply remotely
+make infra-outputs    # Display all Terraform outputs (User Pool IDs, Function URLs, queue URLs)
+```
 
 On AWS the Lambda has no internet access, so `aws-backend-stack` downloads the pool's JWKS and passes
 it in as `COGNITO_JWKS`. Cognito does not rotate user pool signing keys. Meetings created before
