@@ -262,3 +262,84 @@ The trust template uses this repository's immutable OIDC subject, which includes
 #### Capture the meetings screenshot
 
 After a successful deployment, open the frontend URL above, sign up and confirm your email, then sign in. Open `/home`; add a meeting if the view is empty, then capture a screenshot showing the meetings calendar/list for the submission. Sign-in requires access to the email address used for the Cognito account.
+
+
+---
+
+## Google Cloud Deployment (Lab 9)
+
+In Lab 9, the core of Spry runs on Google Cloud Platform (GCP):
+- **Backend API:** Google Cloud Run (containerized FastAPI, scaling to 0)
+- **Database:** Cloud SQL for PostgreSQL (`db-f1-micro`, 10 GB SSD)
+- **Container Registry:** Google Artifact Registry
+- **Secrets:** Google Secret Manager (auto-generated DB password)
+- **Frontend:** Firebase Hosting (CDN + SSL + `/api/**` rewrite to Cloud Run)
+
+### What Still Runs on AWS
+To keep the multi-cloud architecture lean:
+- **Authentication:** Amazon Cognito User Pool remains on AWS (API can run with local user token or accept Cognito JWTs).
+- **Weekly Report Pipeline:** EventBridge Scheduler + SQS + Worker Lambda remains on AWS.
+- **AI Agenda Parser:** Amazon Bedrock (Claude 3.5 Haiku) remains on AWS.
+
+---
+
+### How to Deploy to GCP
+
+#### 1. Prerequisites
+- A Google Cloud Project with Billing enabled (e.g. `spry-chasyuk-2026`).
+- Authenticate locally using Application Default Credentials (ADC):
+  ```bash
+  gcloud auth application-default login
+  gcloud config set project <YOUR_PROJECT_ID>
+  ```
+
+#### 2. Deploy Infrastructure with Terraform
+```bash
+cd gcp
+terraform init
+terraform apply -var="project_id=<YOUR_PROJECT_ID>"
+```
+Terraform will output:
+- `cloud_run_url`: The HTTPS endpoint of the API.
+- `cloud_sql_connection_name`: The Cloud SQL connection string.
+- `artifact_registry_repo`: The Docker repository URI.
+
+#### 3. Build & Deploy Backend Image
+```bash
+# Authenticate Docker to Artifact Registry
+gcloud auth configure-docker us-central1-docker.pkg.dev
+
+# Build and push backend image
+docker build -t us-central1-docker.pkg.dev/<YOUR_PROJECT_ID>/spry-backend/backend:latest back/
+docker push us-central1-docker.pkg.dev/<YOUR_PROJECT_ID>/spry-backend/backend:latest
+
+# Update Cloud Run to use the new image
+terraform apply -var="project_id=<YOUR_PROJECT_ID>" -var="backend_image=us-central1-docker.pkg.dev/<YOUR_PROJECT_ID>/spry-backend/backend:latest"
+```
+
+#### 4. Deploy Frontend to Firebase Hosting
+```bash
+cd front
+npm run build
+cd ..
+firebase deploy --only hosting --project <YOUR_PROJECT_ID>
+```
+
+---
+
+### How to Stop or Clean Up the Database (Prevent Charges!)
+Cloud SQL `db-f1-micro` bills $0.0105/hour continuously if left running.
+
+- **To STOP the instance when idle:**
+  ```bash
+  gcloud sql instances patch <INSTANCE_NAME> --activation-policy=NEVER --project=<YOUR_PROJECT_ID>
+  ```
+- **To START the instance again:**
+  ```bash
+  gcloud sql instances patch <INSTANCE_NAME> --activation-policy=ALWAYS --project=<YOUR_PROJECT_ID>
+  ```
+- **To completely DESTROY all GCP resources (recommended after lab completion):**
+  ```bash
+  cd gcp
+  terraform destroy -var="project_id=<YOUR_PROJECT_ID>"
+  ```
